@@ -19,6 +19,8 @@ package com.netflix.loadbalancer;
 
 import java.util.List;
 
+import javax.inject.Inject;
+
 import com.google.common.collect.Collections2;
 import com.netflix.client.config.IClientConfig;
 import com.netflix.servo.annotations.DataSourceType;
@@ -51,6 +53,11 @@ public class AvailabilityFilteringRule extends PredicateBasedRule {
                 .build();
     }
     
+    @Inject
+    public AvailabilityFilteringRule(IClientConfig clientConfig) {
+        this();
+        initWithNiwsConfig(clientConfig);
+    }
     
     @Override
     public void initWithNiwsConfig(IClientConfig clientConfig) {

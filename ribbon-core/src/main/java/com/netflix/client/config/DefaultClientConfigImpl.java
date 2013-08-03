@@ -28,11 +28,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Strings;
+import com.google.inject.Inject;
+import com.google.inject.assistedinject.Assisted;
 import com.netflix.client.ClientFactory;
 import com.netflix.client.VipAddressResolver;
 import com.netflix.config.ConfigurationManager;
 import com.netflix.config.DynamicPropertyFactory;
 import com.netflix.config.DynamicStringProperty;
+
 
 /**
  * Default client configuration that loads properties from Archaius's ConfigurationManager. 
@@ -169,6 +172,15 @@ public class DefaultClientConfigImpl implements IClientConfig {
     
     public static final Boolean DEFAULT_ENABLE_NIWS_EVENT_LOGGING = Boolean.TRUE;
         
+    public static class DefaultClientConfigFactory implements ClientConfigFactory {
+        @Override
+        public IClientConfig create(String clientName) {
+            DefaultClientConfigImpl clientConfig = new DefaultClientConfigImpl();
+            clientConfig.loadProperties(clientName);
+            return clientConfig;
+        }        
+    }
+    
     private Map<String, DynamicStringProperty> dynamicProperties = new ConcurrentHashMap<String, DynamicStringProperty>();
 
     public Boolean getDefaultPrioritizeVipAddressBasedServers() {

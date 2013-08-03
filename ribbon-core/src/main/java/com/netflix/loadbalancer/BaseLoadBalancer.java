@@ -28,6 +28,8 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import javax.inject.Inject;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -138,6 +140,64 @@ public class BaseLoadBalancer extends AbstractLoadBalancer implements
         initWithNiwsConfig(config);
     }
 
+    public void init(IClientConfig clientConfig, IRule rule, IPing ping) {
+        this.config = clientConfig;
+        String clientName = clientConfig.getClientName();
+        this.rule = rule;
+        this.ping = ping;
+
+
+        this.name = clientName;
+        int pingIntervalTime = Integer.parseInt(""
+                + clientConfig.getProperty(
+                        CommonClientConfigKey.NFLoadBalancerPingInterval,
+                        Integer.parseInt("30")));
+        int maxTotalPingTime = Integer.parseInt(""
+                + clientConfig.getProperty(
+                        CommonClientConfigKey.NFLoadBalancerMaxTotalPingTime,
+                        Integer.parseInt("2")));
+
+        setPingInterval(pingIntervalTime);
+        setMaxTotalPingTime(maxTotalPingTime);
+
+        // cross associate with each other
+        // i.e. Rule,Ping meet your container LB
+        // LB, these are your Ping and Rule guys ...
+        setRule(rule);
+        setPing(ping);
+        setLoadBalancerStats(new LoadBalancerStats(clientName));
+        rule.setLoadBalancer(this);
+        if (ping instanceof AbstractLoadBalancerPing) {
+            ((AbstractLoadBalancerPing) ping).setLoadBalancer(this);
+        }
+        logger.info("Client:" + name + " instantiated a LoadBalancer:"
+                + toString());
+        boolean enablePrimeConnections = false;
+
+        if (clientConfig
+                .getProperty(CommonClientConfigKey.EnablePrimeConnections) != null) {
+            Boolean bEnablePrimeConnections = Boolean.valueOf(""
+                    + clientConfig.getProperty(
+                            CommonClientConfigKey.EnablePrimeConnections,
+                            "false"));
+            enablePrimeConnections = bEnablePrimeConnections.booleanValue();
+        }
+
+        if (enablePrimeConnections) {
+            this.setEnablePrimingConnections(true);
+            PrimeConnections primeConnections = new PrimeConnections(
+                    this.getName(), clientConfig);
+            this.setPrimeConnections(primeConnections);
+        }
+        init();                
+    }
+    
+    @Inject
+    public BaseLoadBalancer(IClientConfig clientConfig, IRule rule, IPing ping) {
+        this();
+        init(clientConfig, rule, ping);
+    }
+    
     @Override
     public void initWithNiwsConfig(IClientConfig clientConfig) {
     	this.config = clientConfig;
