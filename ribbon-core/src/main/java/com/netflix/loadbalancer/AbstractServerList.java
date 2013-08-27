@@ -31,6 +31,33 @@ import com.netflix.client.config.IClientConfig;
  */
 public abstract class AbstractServerList<T extends Server> implements ServerList<T>, IClientConfigAware {   
      
+
+    private ServerListFilter<T> filter = null;
+    
+    public AbstractServerList() {
+        this.filter = new ServerListPassThroughFilter<T>();
+    }
+    
+    public AbstractServerList(AbstractServerListFilter<T> filter) {
+        this.filter = filter;
+    }
+    
+    @Override
+    public void initWithNiwsConfig(IClientConfig clientConfig) {
+        try {
+            this.filter = getFilterImpl(clientConfig);
+        } catch (Exception e) {
+            throw new RuntimeException("Error initialize ServerList", e);
+        }
+    }
+
+    public final ServerListFilter<T> getFilter() {
+        return filter;
+    }
+    
+    public void setFilter(ServerListFilter<T> filter) {
+        this.filter = filter;
+    }
     
     /**
      * Get a ServerListFilter instance. It uses {@link ClientFactory#instantiateInstanceWithClientConfig(String, IClientConfig)}
@@ -40,15 +67,16 @@ public abstract class AbstractServerList<T extends Server> implements ServerList
      */
     public AbstractServerListFilter<T> getFilterImpl(IClientConfig niwsClientConfig) throws ClientException{
         try {
-            String niwsServerListFilterClassName = niwsClientConfig
-                    .getProperty(
-                            CommonClientConfigKey.NIWSServerListFilterClassName,
-                            ZoneAffinityServerListFilter.class.getName())
-                    .toString();
-
-            AbstractServerListFilter<T> abstractNIWSServerListFilter = 
-                    (AbstractServerListFilter<T>) ClientFactory.instantiateInstanceWithClientConfig(niwsServerListFilterClassName, niwsClientConfig);
-            return abstractNIWSServerListFilter;
+            String niwsServerListFilterClassName = (String) niwsClientConfig.getProperty(
+                            CommonClientConfigKey.NIWSServerListFilterClassName);
+            if (niwsServerListFilterClassName != null) {
+                AbstractServerListFilter<T> abstractNIWSServerListFilter = 
+                        (AbstractServerListFilter<T>) ClientFactory.instantiateInstanceWithClientConfig(niwsServerListFilterClassName, niwsClientConfig);
+                return abstractNIWSServerListFilter;
+            } else {
+                return null;
+            }
+                            
         } catch (Throwable e) {
             throw new ClientException(
                     ClientException.ErrorType.CONFIGURATION,

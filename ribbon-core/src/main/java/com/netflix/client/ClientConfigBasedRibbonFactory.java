@@ -20,8 +20,8 @@ public class ClientConfigBasedRibbonFactory implements RibbonFactory {
         IClientConfig config = configFactory.create(name);
         String loadBalancerClassName = String.valueOf(config.getProperty(CommonClientConfigKey.NFLoadBalancerClassName, 
                 DefaultClientConfigImpl.DEFAULT_NFLOADBALANCER_CLASSNAME));
-        IRule rule = createRule(name);
-        IPing ping = createPing(name);
+        IRule rule = createRule(config);
+        IPing ping = createPing(config);
         BaseLoadBalancer lb;
         try {
             lb = (BaseLoadBalancer) Class.forName(loadBalancerClassName).newInstance();
@@ -32,13 +32,7 @@ public class ClientConfigBasedRibbonFactory implements RibbonFactory {
         }
     }
 
-    public ClientConfigFactory getConfigFactory() {
-        return configFactory;
-    }
-    
-    @Override
-    public IRule createRule(String clientName) {
-        IClientConfig config = configFactory.create(clientName);
+    public IRule createRule(IClientConfig config) {
         String loadBalancerClassName = String.valueOf(config.getProperty(CommonClientConfigKey.NFLoadBalancerRuleClassName, 
                 DefaultClientConfigImpl.DEFAULT_NFLOADBALANCER_RULE_CLASSNAME));
         AbstractLoadBalancerRule rule;
@@ -48,12 +42,14 @@ public class ClientConfigBasedRibbonFactory implements RibbonFactory {
             return rule;
         } catch (Exception e) {
             throw new RuntimeException(e);
-        }
+        }        
     }
-
-    @Override
-    public IPing createPing(String clientName) {
-        IClientConfig config = configFactory.create(clientName);
+    
+    public ClientConfigFactory getConfigFactory() {
+        return configFactory;
+    }
+    
+    public IPing createPing(IClientConfig config) {
         String loadBalancerClassName = String.valueOf(config.getProperty(CommonClientConfigKey.NFLoadBalancerPingClassName, 
                 DefaultClientConfigImpl.DEFAULT_NFLOADBALANCER_PING_CLASSNAME));
         IPing ping;

@@ -65,37 +65,11 @@ public abstract class AbstractServerPredicate implements Predicate<PredicateKey>
         };
     }
 
-    public AbstractServerPredicate() {
+    public AbstractServerPredicate() {        
+    }
         
-    }
-    
-    public AbstractServerPredicate(IRule rule) {
-        this.rule = rule;
-    }
-    
-    public AbstractServerPredicate(IRule rule, IClientConfig clientConfig) {
-        this.rule = rule;
-    }
-    
-    public AbstractServerPredicate(LoadBalancerStats lbStats, IClientConfig clientConfig) {
-        this.lbStats = lbStats;
-    }
-    
     protected LoadBalancerStats getLBStats() {
-        if (lbStats != null) {
-            return lbStats;
-        } else if (rule != null) {
-            ILoadBalancer lb = rule.getLoadBalancer();
-            if (lb instanceof AbstractLoadBalancer) {
-                LoadBalancerStats stats =  ((AbstractLoadBalancer) lb).getLoadBalancerStats();
-                setLoadBalancerStats(stats);
-                return stats;
-            } else {
-                return null;
-            }
-        } else {
-            return null;
-        }
+        return lbStats;
     }
     
     public void setLoadBalancerStats(LoadBalancerStats stats) {

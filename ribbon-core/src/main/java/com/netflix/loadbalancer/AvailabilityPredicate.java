@@ -42,20 +42,13 @@ public class AvailabilityPredicate extends  AbstractServerPredicate {
 
     private ChainedDynamicProperty.IntProperty activeConnectionsLimit = new ChainedDynamicProperty.IntProperty(ACTIVE_CONNECTIONS_LIMIT);
         
-    public AvailabilityPredicate(IRule rule, IClientConfig clientConfig) {
-        super(rule, clientConfig);
+    public AvailabilityPredicate() {
+    }
+    
+    public AvailabilityPredicate(IClientConfig clientConfig) {
         initDynamicProperty(clientConfig);
     }
     
-    public AvailabilityPredicate(LoadBalancerStats lbStats, IClientConfig clientConfig) {
-        super(lbStats, clientConfig);
-        initDynamicProperty(clientConfig);
-    }
-    
-    AvailabilityPredicate(IRule rule) {
-        super(rule);
-    }
-
     private void initDynamicProperty(IClientConfig clientConfig) {
         String id = "default";
         if (clientConfig != null) {

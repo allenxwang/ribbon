@@ -68,7 +68,8 @@ public class ZoneAffinityServerListFilter<T extends Server> extends
     
     String zone;
         
-    public ZoneAffinityServerListFilter() {      
+    public ZoneAffinityServerListFilter() {   
+        super();
     }
     
     public ZoneAffinityServerListFilter(IClientConfig niwsClientConfig) {

@@ -50,21 +50,10 @@ public class ZoneAvoidancePredicate extends  AbstractServerPredicate {
                     "niws.loadbalancer.zoneAvoidanceRule.enabled", true);
 
 
-    public ZoneAvoidancePredicate(IRule rule, IClientConfig clientConfig) {
-        super(rule, clientConfig);
+    public ZoneAvoidancePredicate(IClientConfig clientConfig) {
         initDynamicProperties(clientConfig);
     }
 
-    public ZoneAvoidancePredicate(LoadBalancerStats lbStats,
-            IClientConfig clientConfig) {
-        super(lbStats, clientConfig);
-        initDynamicProperties(clientConfig);
-    }
-
-    ZoneAvoidancePredicate(IRule rule) {
-        super(rule);
-    }
-    
     private void initDynamicProperties(IClientConfig clientConfig) {
         if (clientConfig != null) {
             triggeringLoad = DynamicPropertyFactory.getInstance().getDoubleProperty(

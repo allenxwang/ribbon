@@ -26,6 +26,8 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import javax.inject.Inject;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,14 +74,17 @@ public class DynamicServerListLoadBalancer<T extends Server> extends
 
     volatile ServerList<T> serverListImpl;
 
-    volatile ServerListFilter<T> filter;
-
     public DynamicServerListLoadBalancer() {
         super();
     }
 
     public DynamicServerListLoadBalancer(IClientConfig niwsClientConfig) {
         initWithNiwsConfig(niwsClientConfig);
+    }
+    
+    @Inject
+    public DynamicServerListLoadBalancer(ServerList<T> serverListImpl) {
+        this.serverListImpl = serverListImpl;
     }
 
     @Override
@@ -95,13 +100,6 @@ public class DynamicServerListLoadBalancer<T extends Server> extends
                     .instantiateInstanceWithClientConfig(
                             niwsServerListClassName, clientConfig);
             this.serverListImpl = niwsServerListImpl;
-
-            if (niwsServerListImpl instanceof AbstractServerList) {
-                AbstractServerListFilter<T> niwsFilter = ((AbstractServerList) niwsServerListImpl)
-                        .getFilterImpl(clientConfig);
-                niwsFilter.setLoadBalancerStats(getLoadBalancerStats());
-                this.filter = niwsFilter;
-            }
 
             refeshIntervalMills = Integer.valueOf(clientConfig.getProperty(
                     CommonClientConfigKey.ServerListRefreshInterval,
@@ -169,12 +167,20 @@ public class DynamicServerListLoadBalancer<T extends Server> extends
         this.ping = ping;
     }
 
+    @Deprecated
     public ServerListFilter<T> getFilter() {
-        return filter;
+        if (serverListImpl instanceof AbstractServerList) {
+            return ((AbstractServerList) serverListImpl).getFilter();
+        } else {
+            return null;
+        }
     }
 
+    @Deprecated
     public void setFilter(ServerListFilter<T> filter) {
-        this.filter = filter;
+        if (serverListImpl instanceof AbstractServerList) {
+            ((AbstractServerList) serverListImpl).setFilter(filter);
+        } 
     }
 
     @Override
@@ -273,12 +279,6 @@ public class DynamicServerListLoadBalancer<T extends Server> extends
             servers = serverListImpl.getUpdatedListOfServers();
             LOGGER.debug("List of Servers obtained from Discovery client:"
                     + servers);
-
-            if (filter != null) {
-                servers = filter.getFilteredListOfServers(servers);
-                LOGGER.debug("Filtered List of Servers obtained from Discovery client:"
-                        + servers);
-            }
         }
         updateAllServerList(servers);
     }

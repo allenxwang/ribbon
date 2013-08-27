@@ -20,6 +20,8 @@ package com.netflix.niws.loadbalancer;
 import java.util.ArrayList;
 import java.util.List;
 
+import javax.inject.Inject;
+
 import com.netflix.appinfo.InstanceInfo;
 import com.netflix.appinfo.InstanceInfo.InstanceStatus;
 import com.netflix.client.config.CommonClientConfigKey;
@@ -28,6 +30,7 @@ import com.netflix.config.ConfigurationManager;
 import com.netflix.discovery.DiscoveryClient;
 import com.netflix.discovery.DiscoveryManager;
 import com.netflix.loadbalancer.AbstractServerList;
+import com.netflix.loadbalancer.AbstractServerListFilter;
 
 /**
  * Class to hold a list of servers that NIWS RestClient can use
@@ -44,8 +47,21 @@ public class DiscoveryEnabledNIWSServerList extends AbstractServerList<Discovery
   
     String datacenter;
     
+    public DiscoveryEnabledNIWSServerList() {
+        super();
+    }
+
+
+    @Inject
+    public DiscoveryEnabledNIWSServerList(
+            AbstractServerListFilter<DiscoveryEnabledServer> filter) {
+        super(filter);
+    }
+
+
     @Override
     public void initWithNiwsConfig(IClientConfig clientConfig) {
+        super.initWithNiwsConfig(clientConfig);
         this.clientName = clientConfig.getClientName();
         vipAddresses = clientConfig.resolveDeploymentContextbasedVipAddresses();
         isSecure = Boolean.parseBoolean(""+clientConfig.getProperty(CommonClientConfigKey.IsSecure, "false"));
@@ -91,7 +107,7 @@ public class DiscoveryEnabledNIWSServerList extends AbstractServerList<Discovery
                 }
             }
         }
-        return serverList;
+        return getFilter().getFilteredListOfServers(serverList);
     }
 
     public String getVipAddresses() {

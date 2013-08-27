@@ -45,15 +45,31 @@ import com.netflix.servo.annotations.Monitor;
 public class AvailabilityFilteringRule extends PredicateBasedRule {    
 
     private AbstractServerPredicate predicate;
+    private AvailabilityPredicate availability;
     
     public AvailabilityFilteringRule() {
     	super();
-    	predicate = CompositePredicate.withPredicate(new AvailabilityPredicate(this, null))
+        this.availability = new AvailabilityPredicate();
+    	predicate = CompositePredicate.withPredicate(availability)
                 .addFallbackPredicate(AbstractServerPredicate.alwaysTrue())
                 .build();
     }
     
-    @Inject
+    public AvailabilityFilteringRule(AvailabilityPredicate predicate) {
+        this.availability = predicate;
+        this.predicate = CompositePredicate.withPredicate(availability)
+                .addFallbackPredicate(AbstractServerPredicate.alwaysTrue())
+                .build();
+    }
+    
+    @Override
+    public final void setLoadBalancer(ILoadBalancer lb) {
+        super.setLoadBalancer(lb);
+        if (lb instanceof AbstractLoadBalancer) {
+            availability.setLoadBalancerStats(((AbstractLoadBalancer) lb).getLoadBalancerStats());
+        }
+    }
+    
     public AvailabilityFilteringRule(IClientConfig clientConfig) {
         this();
         initWithNiwsConfig(clientConfig);
@@ -61,7 +77,8 @@ public class AvailabilityFilteringRule extends PredicateBasedRule {
     
     @Override
     public void initWithNiwsConfig(IClientConfig clientConfig) {
-    	predicate = CompositePredicate.withPredicate(new AvailabilityPredicate(this, clientConfig))
+        availability = new AvailabilityPredicate(clientConfig);
+    	predicate = CompositePredicate.withPredicate(availability)
     	            .addFallbackPredicate(AbstractServerPredicate.alwaysTrue())
     	            .build();
     }
