@@ -1,7 +1,26 @@
+/*
+ *
+ * Copyright 2013 Netflix, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 package com.netflix.client;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Collection;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,14 +29,23 @@ import com.netflix.client.config.CommonClientConfigKey;
 import com.netflix.client.config.DefaultClientConfigImpl;
 import com.netflix.client.config.IClientConfig;
 import com.netflix.loadbalancer.AbstractLoadBalancer;
-import com.netflix.loadbalancer.AvailabilityFilteringRule;
 import com.netflix.loadbalancer.ILoadBalancer;
 import com.netflix.loadbalancer.LoadBalancerStats;
 import com.netflix.loadbalancer.Server;
 import com.netflix.loadbalancer.ServerStats;
+import com.netflix.servo.monitor.Monitors;
+import com.netflix.servo.monitor.Timer;
 import com.netflix.util.Pair;
 
-public abstract class LoadBalancerContext implements IClientConfigAware {
+/**
+ * A class contains APIs intended to be used be load balancing client which is subclass of this class.
+ * 
+ * @author awang
+ *
+ * @param <T> Type of the request
+ * @param <S> Type of the response
+ */
+public abstract class LoadBalancerContext<T extends ClientRequest, S extends IResponse> implements IClientConfigAware {
     private static final Logger logger = LoggerFactory.getLogger(LoadBalancerContext.class);
 
     protected String clientName = "default";          
@@ -27,12 +55,26 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
     protected int maxAutoRetriesNextServer = DefaultClientConfigImpl.DEFAULT_MAX_AUTO_RETRIES_NEXT_SERVER;
     protected int maxAutoRetries = DefaultClientConfigImpl.DEFAULT_MAX_AUTO_RETRIES;
 
+    protected LoadBalancerErrorHandler<? super T, ? super S> errorHandler = new DefaultLoadBalancerErrorHandler<ClientRequest, IResponse>();
+
 
     boolean okToRetryOnAllOperations = DefaultClientConfigImpl.DEFAULT_OK_TO_RETRY_ON_ALL_OPERATIONS.booleanValue();
         
     private ILoadBalancer lb;
-
     
+    private volatile Timer tracer;
+
+    public LoadBalancerContext() {
+    }
+
+    /**
+     * Delegate to {@link #initWithNiwsConfig(IClientConfig)}
+     * @param clientConfig
+     */
+    public LoadBalancerContext(IClientConfig clientConfig) {
+        initWithNiwsConfig(clientConfig);        
+    }
+
     /**
      * Set necessary parameters from client configuration and register with Servo monitors.
      */
@@ -50,21 +92,22 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
         maxAutoRetriesNextServer = clientConfig.getPropertyAsInteger(CommonClientConfigKey.MaxAutoRetriesNextServer,maxAutoRetriesNextServer);
         
        okToRetryOnAllOperations = clientConfig.getPropertyAsBoolean(CommonClientConfigKey.OkToRetryOnAllOperations, okToRetryOnAllOperations);
-    }
-    
-    /**
-     * Delegate to {@link #initWithNiwsConfig(IClientConfig)}
-     * @param clientConfig
-     */
-    public LoadBalancerContext(IClientConfig clientConfig) {
-        initWithNiwsConfig(clientConfig);        
-    }
-    
-    public LoadBalancerContext() {
-        // TODO Auto-generated constructor stub
+       tracer = getExecuteTracer();
+       Monitors.registerObject("Client_" + clientName, this);
     }
 
-    public final String getClientName() {
+    protected Timer getExecuteTracer() {
+        if (tracer == null) {
+            synchronized(this) {
+                if (tracer == null) {
+                    tracer = Monitors.newTimer(clientName + "_OperationTimer", TimeUnit.MILLISECONDS);                    
+                }
+            }
+        } 
+        return tracer;        
+    }
+    
+    public String getClientName() {
         return clientName;
     }
         
@@ -76,19 +119,19 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
         this.lb = lb;
     }
 
-    public final int getMaxAutoRetriesNextServer() {
+    public int getMaxAutoRetriesNextServer() {
         return maxAutoRetriesNextServer;
     }
 
-    public final void setMaxAutoRetriesNextServer(int maxAutoRetriesNextServer) {
+    public void setMaxAutoRetriesNextServer(int maxAutoRetriesNextServer) {
         this.maxAutoRetriesNextServer = maxAutoRetriesNextServer;
     }
 
-    public final int getMaxAutoRetries() {
+    public int getMaxAutoRetries() {
         return maxAutoRetries;
     }
 
-    public final void setMaxAutoRetries(int maxAutoRetries) {
+    public void setMaxAutoRetries(int maxAutoRetries) {
         this.maxAutoRetries = maxAutoRetries;
     }
 
@@ -103,27 +146,12 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
         return e;
     }
 
-    /**
-     * Determine if an exception should contribute to circuit breaker trip. If such exceptions happen consecutively
-     * on a server, it will be deemed as circuit breaker tripped and enter into a time out when it will be
-     * skipped by the {@link AvailabilityFilteringRule}, which is the default rule for load balancers.
-     */
-    protected abstract boolean isCircuitBreakerException(Throwable e);
-        
-    /**
-     * Determine if operation can be retried if an exception is thrown. For example, connect 
-     * timeout related exceptions
-     * are typically retriable.
-     * 
-     */
-    protected abstract boolean isRetriableException(Throwable e);
-        
     private boolean isPresentAsCause(Throwable throwableToSearchIn,
             Class<? extends Throwable> throwableToSearchFor) {
         return isPresentAsCauseHelper(throwableToSearchIn, throwableToSearchFor) != null;
     }
 
-    private Throwable isPresentAsCauseHelper(Throwable throwableToSearchIn,
+    static Throwable isPresentAsCauseHelper(Throwable throwableToSearchIn,
             Class<? extends Throwable> throwableToSearchFor) {
         int infiniteLoopPreventionCounter = 10;
         while (throwableToSearchIn != null && infiniteLoopPreventionCounter > 0) {
@@ -136,6 +164,24 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
             }
         }
         return null;
+    }
+    
+    /**
+     * Test if certain exception classes exist as a cause in a Throwable 
+     */
+    public static boolean isPresentAsCause(Throwable throwableToSearchIn,
+            Collection<Class<? extends Throwable>> throwableToSearchFor) {
+        int infiniteLoopPreventionCounter = 10;
+        while (throwableToSearchIn != null && infiniteLoopPreventionCounter > 0) {
+            infiniteLoopPreventionCounter--;
+            for (Class<? extends Throwable> c: throwableToSearchFor) {
+                if (throwableToSearchIn.getClass().isAssignableFrom(c)) {
+                    return true;
+                }
+            }
+            throwableToSearchIn = throwableToSearchIn.getCause();
+        }
+        return false;
     }
 
     protected ClientException generateNIWSException(String uri, Throwable e){
@@ -193,28 +239,8 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
         return niwsClientException;
     }
 
-    protected int handleRetry(String uri, int retries, int numRetries,
-            Exception e) throws ClientException {
-        retries++;
-
-        if (retries > numRetries) {
-            throw new ClientException(ClientException.ErrorType.NUMBEROF_RETRIES_EXEEDED,
-                    "NUMBEROFRETRIESEXEEDED :" + numRetries + " retries, while making a RestClient call for:" + uri,
-                    e !=null? e: new RuntimeException());
-        }
-        logger.error("Exception while executing request which is deemed retry-able, retrying ..., SAME Server Retry Attempt#:" +
-                retries +
-                ", URI:" +
-                uri);
-        try {
-            Thread.sleep((int) Math.pow(2.0, retries) * 100); 
-        } catch (InterruptedException ex) {
-        }
-        return retries;
-    }
-
     /**
-     * This is called after a response is received or an exception is thrown from the {@link #execute(ClientRequest)}
+     * This is called after a response is received or an exception is thrown from the client
      * to update related stats.  
      */
     protected void noteRequestCompletion(ServerStats stats, ClientRequest request, IResponse response, Throwable e, long responseTime) {        
@@ -233,7 +259,7 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
     }
        
     /**
-     * Called just before {@link #execute(ClientRequest)} call.
+     * This is usually called just before client execute a request.
      */
     protected void noteOpenConnection(ServerStats serverStats, ClientRequest request) {
         if (serverStats == null) {
@@ -255,7 +281,7 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
      * to get the complete executable URI.
      * 
      */
-    protected <T extends ClientRequest> Pair<String, Integer> deriveSchemeAndPortFromPartialUri(T request) {
+    protected Pair<String, Integer> deriveSchemeAndPortFromPartialUri(T request) {
         URI theUrl = request.getUri();
         boolean isSecure = false;
         String scheme = theUrl.getScheme();
@@ -364,7 +390,7 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
      * @return new request with the final URI  
      */
     @SuppressWarnings("unchecked")
-    protected <T extends ClientRequest> T computeFinalUriWithLoadBalancer(T original) throws ClientException{
+    protected T computeFinalUriWithLoadBalancer(T original) throws ClientException{
         URI newURI;
         URI theUrl = original.getUri();
 
@@ -498,7 +524,7 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
         }
     }
 
-    protected boolean isRetriable(ClientRequest request) {
+    protected boolean isRetriable(T request) {
         if (request.isRetriable()) {
             return true;            
         } else {
@@ -530,16 +556,33 @@ public abstract class LoadBalancerContext implements IClientConfigAware {
 
     }
 
-    public final int getNumberRetriesOnSameServer(IClientConfig overriddenClientConfig) {
+    protected int getNumberRetriesOnSameServer(IClientConfig overriddenClientConfig) {
         int numRetries =  maxAutoRetries;
         if (overriddenClientConfig!=null){
             try {
-                numRetries = Integer.parseInt(""+overriddenClientConfig.getProperty(CommonClientConfigKey.MaxAutoRetries,maxAutoRetries));
+                numRetries = overriddenClientConfig.getPropertyAsInteger(CommonClientConfigKey.MaxAutoRetries, maxAutoRetries);
             } catch (Exception e) {
                 logger.warn("Invalid maxRetries requested for RestClient:" + this.clientName);
             }
         }
         return numRetries;
     }
+    
+    protected boolean handleSameServerRetry(URI uri, int currentRetryCount, int maxRetries, Throwable e) {
+        if (currentRetryCount > maxRetries) {
+            return false;
+        }
+        logger.warn("Exception while executing request which is deemed retry-able, retrying ..., SAME Server Retry Attempt#: {}, URI: {}",  
+                currentRetryCount, uri);
+        return true;
+    }
 
+    public final LoadBalancerErrorHandler<? super T, ? super S> getErrorHandler() {
+        return errorHandler;
+    }
+
+    public final void setErrorHandler(
+            LoadBalancerErrorHandler<? super T, ? super S> errorHandler) {
+        this.errorHandler = errorHandler;
+    }
 }

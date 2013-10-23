@@ -1,9 +1,12 @@
 package com.netflix.client.netty.http;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufInputStream;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.Collection;
@@ -20,7 +23,7 @@ import com.netflix.serialization.ContentTypeBasedSerializerKey;
 import com.netflix.serialization.Deserializer;
 import com.netflix.serialization.SerializationFactory;
 
-public class NettyHttpResponse implements ResponseWithTypedEntity {
+class NettyHttpResponse implements ResponseWithTypedEntity, com.netflix.client.http.HttpResponse {
 
     private final HttpResponse response;
     final ByteBuf content;
@@ -35,30 +38,41 @@ public class NettyHttpResponse implements ResponseWithTypedEntity {
     }
     
     @Override
-    public <T> T get(TypeToken<T> type) throws ClientException {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
-    @Override
-    public <T> T get(Class<T> type) throws ClientException {
+    public <T> T getEntity(TypeToken<T> type) throws ClientException {
         try {
             ContentTypeBasedSerializerKey key = new ContentTypeBasedSerializerKey(response.headers().get(HttpHeaders.CONTENT_TYPE), type);
             Deserializer deserializer = serializationFactory.getDeserializer(key).orNull();
             if (deserializer == null) {
                 throw new ClientException("No serializer for " + key);
             }
-            byte[] raw = getBytesFromByteBuf();
-            return deserializer.deserialize(raw, type);
+            InputStream input = getBytesFromByteBuf();
+            return deserializer.deserialize(input, type);
+        } catch (Throwable e) {
+            throw new ClientException("Unable to deserialize the content", e);    
+        }
+    }
+
+    @Override
+    public <T> T getEntity(Class<T> type) throws ClientException {
+        try {
+            ContentTypeBasedSerializerKey key = new ContentTypeBasedSerializerKey(response.headers().get(HttpHeaders.CONTENT_TYPE), type);
+            Deserializer deserializer = serializationFactory.getDeserializer(key).orNull();
+            if (deserializer == null) {
+                throw new ClientException("No serializer for " + key);
+            }
+            InputStream input = getBytesFromByteBuf();
+            return deserializer.deserialize(input, TypeToken.of(type));
         } catch (Throwable e) {
             throw new ClientException("Unable to deserialize the content", e);    
         }
     }
     
-    private byte[] getBytesFromByteBuf() throws ClientException {
-        if (!content.isReadable()) {
+    private InputStream getBytesFromByteBuf() throws ClientException {
+        if (content == null || !content.isReadable()) {
             throw new ClientException("The underlying ByteBuf is not readable");
         }
+        return new ByteBufInputStream(content);
+        /*
         int readableBytes = content.readableBytes();
         byte[] raw = new byte[readableBytes];
         if (content.hasArray()) {
@@ -67,7 +81,8 @@ public class NettyHttpResponse implements ResponseWithTypedEntity {
             content.getBytes(content.readerIndex(), raw);
         }
         content.skipBytes(readableBytes);
-        return raw;        
+        return raw;
+        */        
     }
 
     @Override
@@ -103,11 +118,25 @@ public class NettyHttpResponse implements ResponseWithTypedEntity {
         return response.getStatus().code();
     }
 
-
     public boolean hasEntity() {
         if (content != null && content.isReadable() && content.readableBytes() > 0) {
             return true;
         }
         return false;
+    }
+
+    @Override
+    public void close() {
+        if (this.content != null) {
+            try {
+                this.content.release();
+            } catch (Exception e) {
+            }
+        }
+    }
+
+    @Override
+    public InputStream getInputStream() throws ClientException {
+        return getBytesFromByteBuf();
     }
 }
