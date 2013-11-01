@@ -17,7 +17,6 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
-import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpContentDecompressor;
@@ -30,8 +29,6 @@ import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.QueryStringEncoder;
-import io.netty.handler.logging.LogLevel;
-import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 
 import java.io.ByteArrayOutputStream;
@@ -40,11 +37,9 @@ import java.net.URI;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -80,17 +75,18 @@ IClientConfigAware {
     private SerializationFactory<ContentTypeBasedSerializerKey> serializationFactory = new JacksonSerializationFactory();
     private Bootstrap b = new Bootstrap();
 
-    private static final String RIBBON_HANDLER = "ribbonHandler"; 
-    private final String READ_TIMEOUT_HANDLER = "readTimeoutHandler"; 
-
-    private ExecutorService executors;
+    public static final String RIBBON_HANDLER = "ribbonHandler"; 
+    public static final String READ_TIMEOUT_HANDLER = "readTimeoutHandler";
+    public static final String AGGREGATOR = "aggegator"; 
+    public static final String ENTITY_DECODER = "EntityDecoder";
+    public static final String ENTITY_HANDLER = "EntityHandler";
 
     private int readTimeout;
     private int connectTimeout;
     private boolean executeCallbackInSeparateThread = true;
 
     private static final Logger logger = LoggerFactory.getLogger(AsyncNettyHttpClient.class);
-
+    
     public static final IClientConfigKey InvokeNettyCallbackInSeparateThread = new IClientConfigKey() {
         @Override
         public String key() {
@@ -111,6 +107,7 @@ IClientConfigAware {
         Preconditions.checkNotNull(group);
         b.group(group)
         .channel(NioSocketChannel.class)
+        .option(ChannelOption.SO_KEEPALIVE, true)
         .handler(new Initializer());
         initWithNiwsConfig(config);
     }
@@ -136,12 +133,74 @@ IClientConfigAware {
         protected void initChannel(SocketChannel ch) throws Exception {
             ChannelPipeline p = ch.pipeline();
 
-            p.addLast("log", new LoggingHandler(LogLevel.INFO));
+            // p.addLast("log", new LoggingHandler(LogLevel.INFO));
             p.addLast("codec", new HttpClientCodec());
 
             // Remove the following line if you don't want automatic content decompression.
             p.addLast("inflater", new HttpContentDecompressor());
         }        
+    }
+
+    private static class DelegateCallback<E> implements ResponseCallback<com.netflix.client.http.HttpResponse, E> {
+
+        private final ResponseCallback<com.netflix.client.http.HttpResponse, E> callback;
+        
+        private final AtomicBoolean callbackInvoked = new AtomicBoolean();
+        private final AtomicBoolean responseReceiveCalled = new AtomicBoolean();
+        private final ChannelFuture channelFuture;
+        
+        DelegateCallback(ResponseCallback<com.netflix.client.http.HttpResponse, E> callback, ChannelFuture channelFuture) {
+            this.callback = callback;
+            this.channelFuture = channelFuture;
+        }
+
+        @Override
+        public void completed(com.netflix.client.http.HttpResponse response) {
+            if (callbackInvoked.compareAndSet(false, true)) {
+                if (callback != null) {
+                    try {
+                        callback.completed(response);
+                    } catch (Throwable e) {
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void failed(Throwable e) {
+            if (callbackInvoked.compareAndSet(false, true) && callback != null) {
+                if (callback != null) {
+                    try {
+                        callback.failed(e);
+                    } catch (Throwable ex) {
+                    }
+                }
+                // releaseChannel(response.getRequestedURI());
+            }
+        }
+
+        @Override
+        public void cancelled() {
+            if (callbackInvoked.compareAndSet(false, true) && callback != null) {
+                callback.cancelled();
+            }            
+        }
+
+        @Override
+        public void responseReceived(
+                com.netflix.client.http.HttpResponse response) {
+            if (responseReceiveCalled.compareAndSet(false, true) && callback != null) {
+                callback.responseReceived(response);
+            }
+        }
+
+        @Override
+        public void contentReceived(E content) {
+            if (callback != null) {
+                callback.contentReceived(content);
+            }
+        }
+
     }
 
     private class RibbonHttpChannelInboundHandler<E> extends SimpleChannelInboundHandler<HttpObject> {
@@ -153,7 +212,7 @@ IClientConfigAware {
         private StreamDecoder<E, ByteBuf> decoder;
         private URI uri;
         private FutureHelper future;
-        
+
         RibbonHttpChannelInboundHandler(ResponseCallback<com.netflix.client.http.HttpResponse, E> callback, final StreamDecoder<E, ByteBuf> streamDecoder, URI uri, FutureHelper future) {
             this.callback = callback;
             this.uri = uri;
@@ -192,11 +251,10 @@ IClientConfigAware {
                     try {
                         future.completeResponse.set(nettyResponse);
                         future.waitingForCompletion.signalAll();
-                        System.err.println("Got full response, signalAll");
                     } finally {
                         future.lock.unlock();
                     }
-                    ctx.close();
+                    // ctx.close();
                     if (callback != null) {
                         invokeResponseCallback(callback, nettyResponse);
                     }
@@ -227,8 +285,8 @@ IClientConfigAware {
             if (callback != null) {
                 invokeExceptionCallback(callback, cause);
             }
-            ctx.channel().close();
-            ctx.close();
+            // ctx.channel().close();
+            // ctx.close();
         }
     }
 
@@ -249,14 +307,14 @@ IClientConfigAware {
 
         @Override
         public boolean cancel(boolean mayInterruptIfRunning) {
-            if (!channelFuture.isDone()) {
-                return channelFuture.cancel(mayInterruptIfRunning);
-            } else if (channelFuture.isSuccess()) {
-                if (mayInterruptIfRunning) {
-                    lock.lock();
-                    try {
+            lock.lock();
+            try {
+                if (!channelFuture.isDone()) {
+                    return channelFuture.cancel(mayInterruptIfRunning);
+                } else if (channelFuture.isSuccess()) {
+                    if (mayInterruptIfRunning) {
                         Channel ch = channelFuture.channel();
-                        ch.pipeline().remove(RIBBON_HANDLER);
+                        // ch.pipeline().remove(RIBBON_HANDLER);
                         ch.disconnect();
                         cancelled.set(true);
                         waitingForCompletion.signalAll();
@@ -264,14 +322,14 @@ IClientConfigAware {
                             callback.cancelled();
                         }
                         return true;
-                    } finally {
-                        lock.unlock();
+                    } else {
+                        return false;
                     }
                 } else {
                     return false;
                 }
-            } else {
-                return false;
+            } finally {
+                lock.unlock();
             }
         }
 
@@ -314,7 +372,7 @@ IClientConfigAware {
                     throw new ExecutionException(error.get());
                 } else {
                     // cancelled
-                    throw new ExecutionException(new ClientException("operation cancelled"));
+                    throw new CancellationException("operation cancelled");
                 }
             } finally {
                 lock.unlock();
@@ -323,11 +381,11 @@ IClientConfigAware {
 
         @Override
         public boolean isCancelled() {
-            if (channelFuture.isCancelled()) {
-                return true;
-            }
             lock.lock();
             try {
+                if (channelFuture.isCancelled()) {
+                    return true;
+                }
                 return cancelled.get();
             } finally {
                 lock.unlock();
@@ -336,15 +394,15 @@ IClientConfigAware {
 
         @Override
         public boolean isDone() {
-            if (isCancelled()) {
-                return true;
-            } else {
-                lock.lock();
-                try {
+            lock.lock();
+            try {
+                if (isCancelled()) {
+                    return true;
+                } else {
                     return completeResponse.get() != null || error.get() != null || cancelled.get();
-                } finally {
-                    lock.unlock();
                 }
+            } finally {
+                lock.unlock();
             }
         }
         
@@ -354,7 +412,7 @@ IClientConfigAware {
     public <E> Future<com.netflix.client.http.HttpResponse> execute(
             final com.netflix.client.http.HttpRequest request,
             final StreamDecoder<E, ByteBuf> decoder,
-            final ResponseCallback<com.netflix.client.http.HttpResponse, E> callback)
+            ResponseCallback<com.netflix.client.http.HttpResponse, E> callback)
                     throws ClientException {
         final URI uri = request.getUri();
         String scheme = uri.getScheme() == null? "http" : uri.getScheme();
@@ -370,9 +428,11 @@ IClientConfigAware {
         final HttpRequest nettyHttpRequest = getHttpRequest(request);
         // Channel ch = null;
         final FutureHelper future;
+        final DelegateCallback<E> delegate;
         try {
             b.option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeout);
             ChannelFuture channelFuture = b.connect(host, port);
+            delegate = new DelegateCallback<E>(callback, channelFuture);
             future = new FutureHelper(channelFuture, callback);
             channelFuture.addListener(new ChannelFutureListener() {         
                 @Override
@@ -382,17 +442,17 @@ IClientConfigAware {
                         if (f.isCancelled()) {
                             future.cancelled.set(true);
                             future.waitingForCompletion.signalAll();
-                            callback.cancelled();
+                            delegate.cancelled();
                         } else if (!f.isSuccess()) {
                             future.error.set(f.cause());
                             future.waitingForCompletion.signalAll();
-                            callback.failed(f.cause());
+                            delegate.failed(f.cause());
                         } else {
                             final Channel ch = f.channel();
                             final ChannelPipeline p = ch.pipeline();
 
                             if (decoder == null) {
-                                p.addLast("aggregator", new HttpObjectAggregator(Integer.MAX_VALUE));
+                                p.addLast(AGGREGATOR, new HttpObjectAggregator(Integer.MAX_VALUE));
                             }
                             // only add read timeout after successful channel connection
                             if (p.get(READ_TIMEOUT_HANDLER) != null) {
@@ -404,7 +464,7 @@ IClientConfigAware {
                                 p.remove(RIBBON_HANDLER);
                             }
 
-                            p.addLast(RIBBON_HANDLER, new RibbonHttpChannelInboundHandler<E>(callback, decoder, uri, future));
+                            p.addLast(RIBBON_HANDLER, new RibbonHttpChannelInboundHandler<E>(delegate, decoder, uri, future));
                             if (decoder != null) {
                                 p.addLast("EntityDecoder", new ByteToMessageDecoder() {
                                     @Override
@@ -424,16 +484,14 @@ IClientConfigAware {
                                     protected void channelRead0(
                                             ChannelHandlerContext ctx, E msg)
                                                     throws Exception {
-                                        if (callback != null && msg != null) {
-                                            callback.contentReceived(msg);
+                                        if (msg != null) {
+                                            delegate.contentReceived(msg);
                                         }
                                     }
 
                                     @Override
                                     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-                                        if (callback != null) {
-                                            callback.failed(cause);
-                                        }
+                                        delegate.failed(cause);
                                     }
 
                                 });
@@ -444,9 +502,7 @@ IClientConfigAware {
                         // this will be called if task submission is rejected
                         future.error.set(e);
                         future.waitingForCompletion.signalAll();
-                        if (callback != null) {
-                            callback.failed(e);
-                        }
+                        delegate.failed(e);
                     } finally {
                         future.lock.unlock();
                     }
@@ -515,7 +571,7 @@ IClientConfigAware {
             r = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.valueOf(request.getVerb().name()), uri, buf);
             r.headers().set(HttpHeaders.Names.CONTENT_LENGTH, content.length);
         } else {
-            r = new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.valueOf(request.getVerb().name()), uri);
+            r = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.valueOf(request.getVerb().name()), uri);
         }
         if (request.getHeaders() != null) {
             for (Map.Entry<String, Collection<String>> entry: request.getHeaders().entrySet()) {
@@ -524,12 +580,9 @@ IClientConfigAware {
                 r.headers().set(name, values);
             }
         }
-
+        r.headers().set("Connection", "Keep-Alive");
+        r.headers().set("Host", request.getUri().getHost());
         return r;
-    }
-
-    public void shutDown() {
-        executors.shutdown();
     }
 
     public final SerializationFactory<ContentTypeBasedSerializerKey> getSerializationFactory() {

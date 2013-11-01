@@ -52,11 +52,13 @@ public class ResponseCallbackWithLatch extends BufferedResponseCallback<HttpResp
     
     @edu.umd.cs.findbugs.annotations.SuppressWarnings(value = "RV_RETURN_VALUE_IGNORED")
     public void awaitCallback() throws InterruptedException {
-        latch.await(60, TimeUnit.SECONDS); // NOPMD
+        latch.await(5, TimeUnit.SECONDS); // NOPMD
         // wait more time in case duplicate callback is received
         Thread.sleep(1000);
-        if (getFinalCount() != 1) {
+        if (getFinalCount() > 1) {
             fail("Duplicate callback received");
+        } else if (getFinalCount() == 0) {
+            fail("No callback received");
         }
             
     }
