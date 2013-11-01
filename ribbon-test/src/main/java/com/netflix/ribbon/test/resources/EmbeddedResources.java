@@ -143,10 +143,6 @@ public class EmbeddedResources {
                 for (String line: streamContent) {
                     String eventLine = line + "\n";
                     output.write(eventLine.getBytes("UTF-8"));
-                    try {
-                       Thread.sleep(10);
-                    } catch (Exception e) { // NOPMD
-                    }
                 }
             }
         };

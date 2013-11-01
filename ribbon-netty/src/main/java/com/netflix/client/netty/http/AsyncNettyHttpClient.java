@@ -496,7 +496,20 @@ IClientConfigAware {
 
                                 });
                             }
-                            ch.writeAndFlush(nettyHttpRequest);
+                            ch.writeAndFlush(nettyHttpRequest).addListener(new ChannelFutureListener() {
+                                @Override
+                                public void operationComplete(ChannelFuture f) throws Exception {
+                                    if (f.isCancelled()) {
+                                        future.cancelled.set(true);
+                                        future.waitingForCompletion.signalAll();
+                                        delegate.cancelled();
+                                    } else if (!f.isSuccess()) {
+                                        future.error.set(f.cause());
+                                        future.waitingForCompletion.signalAll();
+                                        delegate.failed(f.cause());
+                                    }
+                                }
+                            });
                         };
                     } catch (Throwable e) {
                         // this will be called if task submission is rejected

@@ -6,7 +6,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 
@@ -17,11 +16,12 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -29,6 +29,19 @@ import org.junit.Test;
 import rx.util.functions.Action1;
 
 import com.google.common.collect.Lists;
+import com.netflix.client.AsyncBackupRequestsExecutor.ExecutionResult;
+import com.netflix.client.AsyncLoadBalancingClient;
+import com.netflix.client.ObservableAsyncClient;
+import com.netflix.client.ObservableAsyncClient.StreamEvent;
+import com.netflix.client.ResponseCallback;
+import com.netflix.client.StreamDecoder;
+import com.netflix.client.config.CommonClientConfigKey;
+import com.netflix.client.config.DefaultClientConfigImpl;
+import com.netflix.client.http.HttpRequest;
+import com.netflix.client.http.HttpRequest.Verb;
+import com.netflix.client.http.HttpResponse;
+import com.netflix.client.netty.http.AsyncNettyHttpClient;
+import com.netflix.client.netty.http.NettyHttpLoadBalancerErrorHandler;
 import com.netflix.loadbalancer.AvailabilityFilteringRule;
 import com.netflix.loadbalancer.BaseLoadBalancer;
 import com.netflix.loadbalancer.DummyPing;
@@ -38,25 +51,6 @@ import com.netflix.ribbon.test.client.ResponseCallbackWithLatch;
 import com.netflix.ribbon.test.resources.EmbeddedResources;
 import com.netflix.ribbon.test.resources.EmbeddedResources.Person;
 import com.netflix.serialization.ContentTypeBasedSerializerKey;
-
-import com.netflix.client.AsyncLoadBalancingClient;
-import com.netflix.client.BufferedResponseCallback;
-import com.netflix.client.ObservableAsyncClient;
-import com.netflix.client.ResponseCallback;
-import com.netflix.client.StreamDecoder;
-import com.netflix.client.AsyncBackupRequestsExecutor.ExecutionResult;
-import com.netflix.client.ObservableAsyncClient.StreamEvent;
-import com.netflix.client.config.CommonClientConfigKey;
-import com.netflix.client.config.DefaultClientConfigImpl;
-import com.netflix.client.http.AsyncBufferingHttpClient;
-import com.netflix.client.http.AsyncHttpClient;
-import com.netflix.client.http.AsyncLoadBalancingHttpClient;
-import com.netflix.client.http.HttpRequest;
-import com.netflix.client.http.HttpResponse;
-import com.netflix.client.http.HttpRequest.Verb;
-import com.netflix.client.netty.http.AsyncNettyHttpClient;
-import com.netflix.client.netty.http.NettyHttpLoadBalancerErrorHandler;
-import com.netflix.config.ConfigurationManager;
 import com.sun.jersey.api.container.httpserver.HttpServerFactory;
 import com.sun.jersey.api.core.PackagesResourceConfig;
 import com.sun.net.httpserver.HttpServer;
@@ -78,12 +72,11 @@ public class NettyClientTest {
             if (input == null || !input.isReadable()) {
                 return null;
             }
-            ByteBuf copy = input.duplicate();
             ByteBuf buffer = Unpooled.buffer();
-            int start = copy.readerIndex();
+            int start = input.readerIndex();
             boolean foundDelimiter = false;
-            while (copy.readableBytes() > 0) {
-                byte b = copy.readByte();
+            while (input.readableBytes() > 0) {
+                byte b = input.readByte();
                 if (b == 10 || b == 13) {
                     foundDelimiter = true;
                     break;
@@ -92,13 +85,13 @@ public class NettyClientTest {
                 }
             }
             if (!foundDelimiter) {
+                input.readerIndex(start);
                 return null;
             }
-            int bytesRead = copy.readerIndex() - start;
+            int bytesRead = input.readerIndex() - start;
             if (bytesRead == 0) {
                 return null;
             }
-            input.skipBytes(bytesRead);
             byte[] content = new byte[buffer.readableBytes()];
             buffer.getBytes(0, content);
             return new String(content, "UTF-8");
@@ -110,12 +103,14 @@ public class NettyClientTest {
         PackagesResourceConfig resourceConfig = new PackagesResourceConfig("com.netflix.ribbon.test.resources");
         port = (new Random()).nextInt(1000) + 4000;
         SERVICE_URI = "http://localhost:" + port + "/";
+        ExecutorService service = Executors.newFixedThreadPool(200);
         try{
             server = HttpServerFactory.create(SERVICE_URI, resourceConfig);           
+            server.setExecutor(service);
             server.start();
-        } catch (Exception e) {
+        } catch(Exception e) {
             e.printStackTrace();
-            fail(e.getMessage());
+            fail("Unable to start server");
         }
     }
 
@@ -386,7 +381,52 @@ public class NettyClientTest {
         assertEquals(1, lb.getLoadBalancerStats().getSingleServerStat(good).getTotalRequestsCount());
     }
     
-    
+    @Test
+    public void testLoadBalancingClientConcurrency() throws Exception {
+        final AsyncLoadBalancingClient<HttpRequest, HttpResponse, ByteBuf, ?> loadBalancingClient = new AsyncLoadBalancingClient<HttpRequest, 
+                HttpResponse, ByteBuf, ContentTypeBasedSerializerKey>(client);
+        BaseLoadBalancer lb = new BaseLoadBalancer(new DummyPing(), new RoundRobinRule());
+        final Server good = new Server("localhost:" + port);
+        final Server bad = new Server("localhost:" + 33333);
+        List<Server> servers = Lists.newArrayList(good, bad, good, good);
+        lb.setServersList(servers);
+        loadBalancingClient.setLoadBalancer(lb);
+        loadBalancingClient.setMaxAutoRetriesNextServer(2);
+        URI uri = new URI("/testAsync/person");
+        final HttpRequest request = HttpRequest.newBuilder().uri(uri).build();
+        int concurrency = 200;
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        final CountDownLatch completeLatch = new CountDownLatch(concurrency);
+        for (int i = 0; i < concurrency; i++) {
+            final int num = i;
+            final ResponseCallbackWithLatch callback = new ResponseCallbackWithLatch();        
+            executor.submit(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        loadBalancingClient.execute(request, callback);
+                        callback.awaitCallback();       
+                        completeLatch.countDown();
+                    } catch (Throwable e) {
+                        e.printStackTrace();
+                        fail(e.getMessage());
+                    }
+                    if (callback.getError() == null) {
+                        try {
+                            assertEquals(EmbeddedResources.defaultPerson, callback.getHttpResponse().getEntity(Person.class));
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                            fail(e.getMessage());
+                        }
+                    }
+                }
+            });     
+        }
+        if (!completeLatch.await(60, TimeUnit.SECONDS)) {
+            fail("Not all threads have completed");
+        }
+    }
+
     @Test
     public void testLoadBalancingClientMultiServersFuture() throws Exception {
         BaseLoadBalancer lb = new BaseLoadBalancer(new DummyPing(), new RoundRobinRule());
@@ -421,7 +461,6 @@ public class NettyClientTest {
         ResponseCallbackWithLatch callback = new ResponseCallbackWithLatch();                
         ExecutionResult<HttpResponse> result = loadBalancingClient.executeWithBackupRequests(request, 4, 1, TimeUnit.MILLISECONDS,null, callback);
         callback.awaitCallback();
-        System.err.println("get result");
         assertTrue(result.isResponseReceived());
         assertNull(callback.getError());
         assertFalse(callback.isCancelled());
@@ -510,5 +549,71 @@ public class NettyClientTest {
         assertEquals(4, lb.getLoadBalancerStats().getSingleServerStat(server).getSuccessiveConnectionFailureCount());                
     }
     
+    @Test
+    public void testConcurrentStreaming() throws Exception {
+        final HttpRequest request = HttpRequest.newBuilder().uri(SERVICE_URI + "testAsync/stream").build();
+        int concurrency = 200;
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        final CountDownLatch completeLatch = new CountDownLatch(concurrency);
+        final AtomicInteger successCount = new AtomicInteger();
+        for (int i = 0; i < concurrency; i++) {
+            final int num = i;
+            executor.submit(new Runnable() {
+                @Override
+                public void run() {
+                    final List<String> results = Lists.newArrayList();
+                    final CountDownLatch latch = new CountDownLatch(1);
+                    final AtomicBoolean failed = new AtomicBoolean();
+                    try {
+                        client.execute(request, new SSEDecoder(), new ResponseCallback<HttpResponse, String>() {
+                            @Override
+                            public void completed(HttpResponse response) {
+                                latch.countDown();    
+                            }
+
+                            @Override
+                            public void failed(Throwable e) {
+                                System.err.println("Error received " + e);
+                                failed.set(true);
+                                latch.countDown();
+                            }
+
+                            @Override
+                            public void contentReceived(String element) {
+                                results.add(element);
+                            }
+
+                            @Override
+                            public void cancelled() {
+                            }
+
+                            @Override
+                            public void responseReceived(HttpResponse response) {
+                            }
+                        });
+                        if (!latch.await(60, TimeUnit.SECONDS)) {
+                            fail("No callback happens within timeout");
+                        }
+                        if (!failed.get()) {
+                            successCount.incrementAndGet();
+                            assertEquals(EmbeddedResources.streamContent, results);
+                        } else {
+                            System.err.println("Thread " + num + " failed");
+                        }
+                        completeLatch.countDown();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        fail("Thread " + num + " failed due to unexpected exception");
+                    }
+                    
+                }
+            });
+        }
+        if (!completeLatch.await(60, TimeUnit.SECONDS)) {
+            fail("Some threads have not completed streaming within timeout");
+        }
+        System.out.println("Successful streaming " + successCount.get());
+    }
+
 
 }
