@@ -15,56 +15,38 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpClientCodec;
-import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpRequest;
-import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.QueryStringEncoder;
 import io.netty.handler.timeout.ReadTimeoutHandler;
-import io.netty.util.AttributeKey;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Collection;
-import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.ReentrantLock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Preconditions;
-import com.netflix.client.AsyncClient;
 import com.netflix.client.ClientException;
 import com.netflix.client.IClientConfigAware;
 import com.netflix.client.ListenableFuture;
-import com.netflix.client.ResponseCallback;
-import com.netflix.client.StreamDecoder;
 import com.netflix.client.config.CommonClientConfigKey;
 import com.netflix.client.config.DefaultClientConfigImpl;
 import com.netflix.client.config.IClientConfig;
-import com.netflix.client.config.IClientConfigKey;
 import com.netflix.client.http.AsyncHttpClient;
-import com.netflix.client.http.HttpResponseCallback;
 import com.netflix.serialization.ContentTypeBasedSerializerKey;
 import com.netflix.serialization.JacksonSerializationFactory;
 import com.netflix.serialization.SerializationFactory;
@@ -84,18 +66,10 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
 
     private int readTimeout;
     private int connectTimeout;
-    private boolean executeCallbackInSeparateThread = true;
     private EventLoopGroup eventGroup;
 
     private static final Logger logger = LoggerFactory.getLogger(AsyncNettyHttpClient.class);
     
-    public static final IClientConfigKey InvokeNettyCallbackInSeparateThread = new IClientConfigKey() {
-        @Override
-        public String key() {
-            return "InvokeNettyCallbackInSeparateThread";
-        }
-    };
-
     public AsyncNettyHttpClient() {
         this(DefaultClientConfigImpl.getClientConfigWithDefaultValues(), new NioEventLoopGroup());
     }
@@ -230,7 +204,7 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
             public void operationComplete(final ChannelFuture f) {
                 try {
                     if (f.isCancelled()) {
-                        promise.setFailure(new CancellationException());
+                        promise.cancel(true);
                     } else if (!f.isSuccess()) {
                         promise.setFailure(f.cause());
                     } else {
@@ -372,15 +346,6 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
 
     public final void setConnectTimeout(int connectTimeout) {
         this.connectTimeout = connectTimeout;
-    }
-
-    public final boolean isExecuteCallbackInSeparateThread() {
-        return executeCallbackInSeparateThread;
-    }
-
-    public final void setExecuteCallbackInSeparateThread(
-            boolean executeCallbackInSeparateThread) {
-        this.executeCallbackInSeparateThread = executeCallbackInSeparateThread;
     }
 
 
