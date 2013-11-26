@@ -10,6 +10,8 @@ import java.io.InputStream;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
 
@@ -19,9 +21,11 @@ import com.google.common.net.HttpHeaders;
 import com.google.common.reflect.TypeToken;
 import com.netflix.client.ClientException;
 import com.netflix.client.ResponseWithTypedEntity;
+import com.netflix.client.http.HttpUtils;
 import com.netflix.serialization.ContentTypeBasedSerializerKey;
 import com.netflix.serialization.Deserializer;
 import com.netflix.serialization.SerializationFactory;
+import com.netflix.serialization.TypeDef;
 
 class NettyHttpResponse implements ResponseWithTypedEntity, com.netflix.client.http.HttpResponse {
 
@@ -29,6 +33,20 @@ class NettyHttpResponse implements ResponseWithTypedEntity, com.netflix.client.h
     final ByteBuf content;
     private final SerializationFactory<ContentTypeBasedSerializerKey> serializationFactory;
     private final URI requestedURI;
+    
+    class NettyHttpHeaders implements com.netflix.client.http.HttpHeaders {
+
+        @Override
+        public String getFirst(String headerName) {
+            return response.headers().get(headerName);
+        }
+
+        @Override
+        public List<String> getAll(String headerName) {
+            return response.headers().getAll(headerName);
+        }
+        
+    }
     
     public NettyHttpResponse(HttpResponse response, ByteBuf content, SerializationFactory<ContentTypeBasedSerializerKey> serializationFactory, URI requestedURI) {
         this.response = response;
@@ -38,51 +56,27 @@ class NettyHttpResponse implements ResponseWithTypedEntity, com.netflix.client.h
     }
     
     @Override
+    @Deprecated
     public <T> T getEntity(TypeToken<T> type) throws ClientException {
         try {
-            ContentTypeBasedSerializerKey key = new ContentTypeBasedSerializerKey(response.headers().get(HttpHeaders.CONTENT_TYPE), type);
-            Deserializer deserializer = serializationFactory.getDeserializer(key).orNull();
-            if (deserializer == null) {
-                throw new ClientException("No serializer for " + key);
-            }
-            InputStream input = getBytesFromByteBuf();
-            return deserializer.deserialize(input, type);
+            return (T) HttpUtils.getEntity(this, TypeDef.fromType(type.getType()), this.serializationFactory);
         } catch (Throwable e) {
             throw new ClientException("Unable to deserialize the content", e);    
         }
     }
 
     @Override
+    @Deprecated
     public <T> T getEntity(Class<T> type) throws ClientException {
         try {
-            ContentTypeBasedSerializerKey key = new ContentTypeBasedSerializerKey(response.headers().get(HttpHeaders.CONTENT_TYPE), type);
-            Deserializer deserializer = serializationFactory.getDeserializer(key).orNull();
-            if (deserializer == null) {
-                throw new ClientException("No serializer for " + key);
-            }
-            InputStream input = getBytesFromByteBuf();
-            return deserializer.deserialize(input, TypeToken.of(type));
+            return HttpUtils.getEntity(this, TypeDef.fromClass(type), this.serializationFactory);
         } catch (Throwable e) {
             throw new ClientException("Unable to deserialize the content", e);    
         }
     }
     
-    private InputStream getBytesFromByteBuf() throws ClientException {
-        if (content == null || !content.isReadable()) {
-            throw new ClientException("The underlying ByteBuf is not readable");
-        }
+    private InputStream getBytesFromByteBuf() {
         return new ByteBufInputStream(content);
-        /*
-        int readableBytes = content.readableBytes();
-        byte[] raw = new byte[readableBytes];
-        if (content.hasArray()) {
-            raw = Arrays.copyOfRange(content.array(), content.arrayOffset() + content.readerIndex(), content.arrayOffset() + content.readerIndex() + readableBytes);
-        } else {
-            content.getBytes(content.readerIndex(), raw);
-        }
-        content.skipBytes(readableBytes);
-        return raw;
-        */        
     }
 
     @Override
@@ -129,14 +123,27 @@ class NettyHttpResponse implements ResponseWithTypedEntity, com.netflix.client.h
     public void close() {
         if (this.content != null) {
             try {
-                this.content.release();
+                while (this.content.refCnt() > 0) {
+                    this.content.release();
+                }
             } catch (Exception e) {
             }
         }
     }
 
     @Override
-    public InputStream getInputStream() throws ClientException {
+    public InputStream getInputStream()  {
         return getBytesFromByteBuf();
+    }
+
+    @Override
+    public String getStatusLine() {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public com.netflix.client.http.HttpHeaders getHttpHeaders() {
+        return new NettyHttpHeaders();
     }
 }

@@ -6,10 +6,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.netflix.client.BufferedResponseCallback;
+import com.netflix.client.ResponseCallback;
 import com.netflix.client.http.HttpResponse;
 
-public class ResponseCallbackWithLatch extends BufferedResponseCallback<HttpResponse> {
+public class ResponseCallbackWithLatch implements ResponseCallback<HttpResponse> {
     private volatile HttpResponse httpResponse;
     private volatile boolean cancelled;
     private volatile Throwable error;
@@ -45,6 +45,7 @@ public class ResponseCallbackWithLatch extends BufferedResponseCallback<HttpResp
 
     @Override
     public void cancelled() {
+        System.err.println("ResponseCallbackWithLatch: cancelled");
         this.cancelled = true;
         latch.countDown();    
         totalCount.incrementAndGet();
@@ -52,7 +53,7 @@ public class ResponseCallbackWithLatch extends BufferedResponseCallback<HttpResp
     
     @edu.umd.cs.findbugs.annotations.SuppressWarnings(value = "RV_RETURN_VALUE_IGNORED")
     public void awaitCallback() throws InterruptedException {
-        latch.await(5, TimeUnit.SECONDS); // NOPMD
+        latch.await(1000000, TimeUnit.SECONDS); // NOPMD
         // wait more time in case duplicate callback is received
         Thread.sleep(1000);
         if (getFinalCount() > 1) {

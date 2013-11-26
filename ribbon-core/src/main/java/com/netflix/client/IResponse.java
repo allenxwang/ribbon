@@ -50,7 +50,7 @@ public interface IResponse extends Closeable
    public URI getRequestedURI();
    
    /**
-    * 
+    * @deprecated
     * @return Headers if any in the response.
     */
    public Map<String, ?> getHeaders();   

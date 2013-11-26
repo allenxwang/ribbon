@@ -30,6 +30,7 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.StatusType;
 import javax.ws.rs.core.StreamingOutput;
 
 import org.codehaus.jackson.map.ObjectMapper;
@@ -129,6 +130,12 @@ public class EmbeddedResources {
     public Response queryPerson(@QueryParam("name") String name, @QueryParam("age") int age) throws IOException {
         Person person = new Person(name, age);
         return Response.ok(mapper.writeValueAsString(person)).build();
+    }
+    
+    @GET
+    @Path("/throttle")
+    public Response throttle() {
+        return Response.status(Response.Status.SERVICE_UNAVAILABLE).build();
     }
     
     @GET

@@ -17,12 +17,9 @@
  */
 package com.netflix.client;
 
-import java.nio.ByteBuffer;
-import java.util.concurrent.Future;
+import java.io.Closeable;
 
-import com.netflix.serialization.ContentTypeBasedSerializerKey;
-import com.netflix.serialization.Deserializer;
-import com.netflix.serialization.Serializer;
+import com.netflix.serialization.TypeDef;
 
 /**
  * Interface for asynchronous communication client with streaming capability.
@@ -35,18 +32,17 @@ import com.netflix.serialization.Serializer;
  * @param <V> Type of key to find {@link Serializer} and {@link Deserializer} for the content. For example, for HTTP communication,
  *            the key type is {@link ContentTypeBasedSerializerKey}
  */
-public interface AsyncClient<T extends ClientRequest, S extends IResponse, U, V> extends ResponseBufferingAsyncClient<T, S, V> {
+public interface AsyncClient<T extends ClientRequest, S extends IResponse> extends Closeable {
+
     /**
-     * Asynchronously execute a request.
      * 
-     * @param request Request to execute
-     * @param decooder Decoder to decode objects from the native stream 
-     * @param callback Callback to be invoked when execution completes or fails
-     * @return Future of the response
-     * @param <E> Type of object to be decoded from the stream
-     * 
-     * @throws ClientException if exception happens before the actual asynchronous execution happens, for example, an error to serialize 
-     *         the entity
+     * @param request
+     * @param callback
+     * @param type Object to hold the runtime type of the expected entity to be used by entity decoder/deserializer
+     * @param <E> Type of the expected entity, can also be type of IResponse to indicate that the caller is interested to
+     *           receive the callback on the raw response, or Void to indicate that the caller is not interested to receive
+     *           any response from the server
      */
-    public <E> Future<S> execute(T request, StreamDecoder<E, U> decooder, ResponseCallback<S, E> callback) throws ClientException;
+    public <E> ListenableFuture<E> execute(T request, TypeDef<E> type);
 }
+

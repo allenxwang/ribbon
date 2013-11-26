@@ -18,9 +18,14 @@
 package com.netflix.client.http;
 
 import java.io.Closeable;
+import java.io.InputStream;
+import java.net.URI;
 import java.util.Collection;
 import java.util.Map;
 
+import com.google.common.reflect.TypeToken;
+import com.netflix.client.ClientException;
+import com.netflix.client.ResponseWithEntity;
 import com.netflix.client.ResponseWithTypedEntity;
 
 /**
@@ -29,13 +34,22 @@ import com.netflix.client.ResponseWithTypedEntity;
  * @author awang
  *
  */
-public interface HttpResponse extends ResponseWithTypedEntity, Closeable {
+public interface HttpResponse extends ResponseWithTypedEntity, ResponseWithEntity, Closeable {
     /**
      * Get the HTTP status code.
      */
     public int getStatus();
     
-    public Map<String, Collection<String>> getHeaders();  
+    public String getStatusLine();
     
+    @Override
+    @Deprecated
+    public Map<String, Collection<String>> getHeaders();
+    
+    public HttpHeaders getHttpHeaders();
+
     public void close();
+    
+    public InputStream getInputStream();
+    
 }

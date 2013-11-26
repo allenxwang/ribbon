@@ -118,5 +118,15 @@ public class ClientConfigTest {
         ConfigurationManager.getConfigInstance().clearProperty("testRestClient2.ribbon.EnableZoneAffinity");
         assertNull(clientConfig.getProperty(CommonClientConfigKey.EnableZoneAffinity));
     }
+    
+    @Test
+    public void testDifferentNameSpace() {
+        ConfigurationManager.getConfigInstance().setProperty("myclient.mynamespace." + CommonClientConfigKey.MaxAutoRetriesNextServer, "10");
+        IClientConfig config = DefaultClientConfigImpl.getClientConfigWithDefaultValues("myclient", "mynamespace");
+        assertEquals("10", config.getProperty(CommonClientConfigKey.MaxAutoRetriesNextServer));
+        ConfigurationManager.getConfigInstance().setProperty("myclient.mynamespace." + CommonClientConfigKey.MaxAutoRetriesNextServer, "5");
+        assertEquals("5", config.getProperty(CommonClientConfigKey.MaxAutoRetriesNextServer));
+
+    }
 }
 

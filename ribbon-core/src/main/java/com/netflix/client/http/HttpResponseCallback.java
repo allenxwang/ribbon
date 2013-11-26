@@ -29,5 +29,5 @@ import com.netflix.client.StreamDecoder;
  * @param <T> Type of of object that can be formed from partial 
  *             content in the native stream. See {@link StreamDecoder}.
  */
-public interface HttpResponseCallback<T> extends ResponseCallback<HttpResponse, T> {
+public interface HttpResponseCallback extends ResponseCallback<HttpResponse> {
 }

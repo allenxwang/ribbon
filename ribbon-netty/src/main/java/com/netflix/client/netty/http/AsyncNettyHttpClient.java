@@ -17,6 +17,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpContentDecompressor;
@@ -30,6 +31,7 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.QueryStringEncoder;
 import io.netty.handler.timeout.ReadTimeoutHandler;
+import io.netty.util.AttributeKey;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -52,9 +54,9 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Preconditions;
 import com.netflix.client.AsyncClient;
-import com.netflix.client.BufferedResponseCallback;
 import com.netflix.client.ClientException;
 import com.netflix.client.IClientConfigAware;
+import com.netflix.client.ListenableFuture;
 import com.netflix.client.ResponseCallback;
 import com.netflix.client.StreamDecoder;
 import com.netflix.client.config.CommonClientConfigKey;
@@ -62,15 +64,14 @@ import com.netflix.client.config.DefaultClientConfigImpl;
 import com.netflix.client.config.IClientConfig;
 import com.netflix.client.config.IClientConfigKey;
 import com.netflix.client.http.AsyncHttpClient;
+import com.netflix.client.http.HttpResponseCallback;
 import com.netflix.serialization.ContentTypeBasedSerializerKey;
 import com.netflix.serialization.JacksonSerializationFactory;
 import com.netflix.serialization.SerializationFactory;
 import com.netflix.serialization.Serializer;
+import com.netflix.serialization.TypeDef;
 
-public class AsyncNettyHttpClient 
-implements AsyncClient<com.netflix.client.http.HttpRequest, com.netflix.client.http.HttpResponse, ByteBuf, ContentTypeBasedSerializerKey>, 
-AsyncHttpClient<ByteBuf>,
-IClientConfigAware {
+public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware {
 
     private SerializationFactory<ContentTypeBasedSerializerKey> serializationFactory = new JacksonSerializationFactory();
     private Bootstrap b = new Bootstrap();
@@ -84,6 +85,7 @@ IClientConfigAware {
     private int readTimeout;
     private int connectTimeout;
     private boolean executeCallbackInSeparateThread = true;
+    private EventLoopGroup eventGroup;
 
     private static final Logger logger = LoggerFactory.getLogger(AsyncNettyHttpClient.class);
     
@@ -105,6 +107,7 @@ IClientConfigAware {
     public AsyncNettyHttpClient(IClientConfig config, EventLoopGroup group) {
         Preconditions.checkNotNull(config);
         Preconditions.checkNotNull(group);
+        eventGroup = group;
         b.group(group)
         .channel(NioSocketChannel.class)
         .option(ChannelOption.SO_KEEPALIVE, true)
@@ -123,12 +126,11 @@ IClientConfigAware {
                 throw new RuntimeException("Unable to initialize SerializationFactory", e);
             }
         }
-        executeCallbackInSeparateThread = config.getPropertyAsBoolean(InvokeNettyCallbackInSeparateThread, false);
         connectTimeout = config.getPropertyAsInteger(CommonClientConfigKey.ConnectTimeout, DefaultClientConfigImpl.DEFAULT_CONNECT_TIMEOUT);
         readTimeout = config.getPropertyAsInteger(CommonClientConfigKey.ReadTimeout, DefaultClientConfigImpl.DEFAULT_READ_TIMEOUT);
     }
 
-    private static class Initializer extends ChannelInitializer<SocketChannel> {
+    private class Initializer extends ChannelInitializer<SocketChannel> {
         @Override
         protected void initChannel(SocketChannel ch) throws Exception {
             ChannelPipeline p = ch.pipeline();
@@ -136,88 +138,27 @@ IClientConfigAware {
             // p.addLast("log", new LoggingHandler(LogLevel.INFO));
             p.addLast("codec", new HttpClientCodec());
 
-            // Remove the following line if you don't want automatic content decompression.
             p.addLast("inflater", new HttpContentDecompressor());
+            
+            p.addLast(AGGREGATOR, new HttpObjectAggregator(Integer.MAX_VALUE));
+            
+            p.addLast(READ_TIMEOUT_HANDLER, new ReadTimeoutHandler(readTimeout, TimeUnit.MILLISECONDS));
+
         }        
     }
 
-    private static class DelegateCallback<E> implements ResponseCallback<com.netflix.client.http.HttpResponse, E> {
-
-        private final ResponseCallback<com.netflix.client.http.HttpResponse, E> callback;
-        
-        private final AtomicBoolean callbackInvoked = new AtomicBoolean();
-        private final AtomicBoolean responseReceiveCalled = new AtomicBoolean();
-        private final ChannelFuture channelFuture;
-        
-        DelegateCallback(ResponseCallback<com.netflix.client.http.HttpResponse, E> callback, ChannelFuture channelFuture) {
-            this.callback = callback;
-            this.channelFuture = channelFuture;
-        }
-
-        @Override
-        public void completed(com.netflix.client.http.HttpResponse response) {
-            if (callbackInvoked.compareAndSet(false, true)) {
-                if (callback != null) {
-                    try {
-                        callback.completed(response);
-                    } catch (Throwable e) {
-                    }
-                }
-            }
-        }
-
-        @Override
-        public void failed(Throwable e) {
-            if (callbackInvoked.compareAndSet(false, true) && callback != null) {
-                if (callback != null) {
-                    try {
-                        callback.failed(e);
-                    } catch (Throwable ex) {
-                    }
-                }
-                // releaseChannel(response.getRequestedURI());
-            }
-        }
-
-        @Override
-        public void cancelled() {
-            if (callbackInvoked.compareAndSet(false, true) && callback != null) {
-                callback.cancelled();
-            }            
-        }
-
-        @Override
-        public void responseReceived(
-                com.netflix.client.http.HttpResponse response) {
-            if (responseReceiveCalled.compareAndSet(false, true) && callback != null) {
-                callback.responseReceived(response);
-            }
-        }
-
-        @Override
-        public void contentReceived(E content) {
-            if (callback != null) {
-                callback.contentReceived(content);
-            }
-        }
-
-    }
-
-    private class RibbonHttpChannelInboundHandler<E> extends SimpleChannelInboundHandler<HttpObject> {
-        HttpResponse response;
+    private class RibbonHttpChannelInboundHandler<T> extends SimpleChannelInboundHandler<HttpObject> {
         AtomicBoolean channelRead = new AtomicBoolean(false);
         AtomicBoolean readTimeoutOccured = new AtomicBoolean(false);
 
-        private ResponseCallback<com.netflix.client.http.HttpResponse, E> callback;
-        private StreamDecoder<E, ByteBuf> decoder;
         private URI uri;
-        private FutureHelper future;
+        private TypeDef<T> typeDef;
+        ExecutionPromise<T> promise;
 
-        RibbonHttpChannelInboundHandler(ResponseCallback<com.netflix.client.http.HttpResponse, E> callback, final StreamDecoder<E, ByteBuf> streamDecoder, URI uri, FutureHelper future) {
-            this.callback = callback;
+        RibbonHttpChannelInboundHandler(URI uri, TypeDef<T> typeDef, ExecutionPromise<T> promise) {
             this.uri = uri;
-            this.decoder = streamDecoder;
-            this.future = future;
+            this.typeDef = typeDef;
+            this.promise = promise;
         }
         
         @Override
@@ -230,37 +171,16 @@ IClientConfigAware {
                     return;
                 }
             }
-            if (msg instanceof HttpResponse) {
-                HttpResponse response = (HttpResponse) msg;
-                this.response = response;
-                NettyHttpResponse nettyResponse = new NettyHttpResponse(this.response, null, serializationFactory, uri);
-                if (callback != null) {
-                    callback.responseReceived(nettyResponse);
+            if (msg instanceof FullHttpResponse) {
+                FullHttpResponse response = (FullHttpResponse) msg;
+                response.content().retain();
+                if (this.typeDef.getRawType().isAssignableFrom(com.netflix.client.http.HttpResponse.class)) {
+                    NettyHttpResponse nettyResponse = new NettyHttpResponse(response, response.content(), serializationFactory, uri);
+                    promise.trySuccess((T) nettyResponse);
+                } else if (!this.typeDef.getRawType().isAssignableFrom(Void.class)) {
+                    ctx.fireChannelRead(response);
                 }
             } 
-            if (msg instanceof HttpContent) {
-                HttpContent content = (HttpContent) msg;
-                final ByteBuf buf = content.content();
-                buf.retain();
-                if (decoder != null) {
-                    ctx.fireChannelRead(buf);
-                }
-                if (content instanceof LastHttpContent) {
-                    NettyHttpResponse nettyResponse = new NettyHttpResponse(this.response, buf, serializationFactory, uri);
-                    future.lock.lock();
-                    try {
-                        future.completeResponse.set(nettyResponse);
-                        future.waitingForCompletion.signalAll();
-                    } finally {
-                        future.lock.unlock();
-                    }
-                    // ctx.close();
-                    if (callback != null) {
-                        invokeResponseCallback(callback, nettyResponse);
-                    }
-                }
-            }
-            
         }
         
         @Override
@@ -275,145 +195,13 @@ IClientConfigAware {
                     }
                 }
             }
-            future.lock.lock();
-            try {
-                future.error.set(cause);
-                future.waitingForCompletion.signalAll();
-            } finally {
-                future.lock.unlock();
-            }
-            if (callback != null) {
-                invokeExceptionCallback(callback, cause);
-            }
-            // ctx.channel().close();
-            // ctx.close();
+            promise.tryFailure(cause);
         }
     }
 
-    private static class FutureHelper implements Future<com.netflix.client.http.HttpResponse> {
-
-        ChannelFuture channelFuture;
-        ReentrantLock lock = new ReentrantLock();
-        Condition waitingForCompletion = lock.newCondition();
-        AtomicReference<com.netflix.client.http.HttpResponse> completeResponse = new AtomicReference<com.netflix.client.http.HttpResponse>();
-        AtomicReference<Throwable> error = new AtomicReference<Throwable>();
-        AtomicBoolean cancelled = new AtomicBoolean(false);
-        ResponseCallback<com.netflix.client.http.HttpResponse, ?> callback;
-        
-        FutureHelper(ChannelFuture channelFuture, ResponseCallback<com.netflix.client.http.HttpResponse, ?> callback) {
-            this.channelFuture = channelFuture;
-            this.callback = callback;
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            lock.lock();
-            try {
-                if (!channelFuture.isDone()) {
-                    return channelFuture.cancel(mayInterruptIfRunning);
-                } else if (channelFuture.isSuccess()) {
-                    if (mayInterruptIfRunning) {
-                        Channel ch = channelFuture.channel();
-                        // ch.pipeline().remove(RIBBON_HANDLER);
-                        ch.disconnect();
-                        cancelled.set(true);
-                        waitingForCompletion.signalAll();
-                        if (callback != null) {
-                            callback.cancelled();
-                        }
-                        return true;
-                    } else {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        @Override
-        public com.netflix.client.http.HttpResponse get()
-                throws InterruptedException, ExecutionException {
-            lock.lock();
-            try {
-                while (completeResponse.get() == null && error.get() == null && !cancelled.get()) {
-                    waitingForCompletion.await();
-                }
-                if (completeResponse.get() != null) {
-                    return completeResponse.get();
-                } else if (error.get() != null) {
-                    throw new ExecutionException(error.get());
-                } else {
-                    // cancelled
-                    throw new ExecutionException(new ClientException("operation cancelled"));
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        @Override
-        public com.netflix.client.http.HttpResponse get(long arg0, TimeUnit arg1)
-                throws InterruptedException, ExecutionException,
-                TimeoutException {
-            lock.lock();
-            try {
-                if (completeResponse.get() == null || error.get() == null || !cancelled.get()) {
-                    boolean completed = waitingForCompletion.await(arg0, arg1);
-                    if (!completed) {
-                        throw new TimeoutException("Timed out");
-                    }
-                }
-                if (completeResponse.get() != null) {
-                    return completeResponse.get();
-                } else if (error.get() != null) {
-                    throw new ExecutionException(error.get());
-                } else {
-                    // cancelled
-                    throw new CancellationException("operation cancelled");
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        @Override
-        public boolean isCancelled() {
-            lock.lock();
-            try {
-                if (channelFuture.isCancelled()) {
-                    return true;
-                }
-                return cancelled.get();
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        @Override
-        public boolean isDone() {
-            lock.lock();
-            try {
-                if (isCancelled()) {
-                    return true;
-                } else {
-                    return completeResponse.get() != null || error.get() != null || cancelled.get();
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-        
-    }
-    
     @Override
-    public <E> Future<com.netflix.client.http.HttpResponse> execute(
-            final com.netflix.client.http.HttpRequest request,
-            final StreamDecoder<E, ByteBuf> decoder,
-            ResponseCallback<com.netflix.client.http.HttpResponse, E> callback)
-                    throws ClientException {
+    public <T> ListenableFuture<T> execute(final com.netflix.client.http.HttpRequest request, 
+            final TypeDef<T> typeDef) {
         final URI uri = request.getUri();
         String scheme = uri.getScheme() == null? "http" : uri.getScheme();
         String host = uri.getHost();
@@ -425,114 +213,76 @@ IClientConfigAware {
                 port = 443;
             }
         }
-        final HttpRequest nettyHttpRequest = getHttpRequest(request);
-        // Channel ch = null;
-        final FutureHelper future;
-        final DelegateCallback<E> delegate;
+        // final AttributeKey<ExecutionPromise<T>> promiseAttrKey = new AttributeKey<ExecutionPromise<T>>(PROCESSING_PROMISE);
+        final HttpRequest nettyHttpRequest;
+        final ExecutionPromise<T> promise = new ExecutionPromise<T>(this.eventGroup.next());
         try {
-            b.option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeout);
-            ChannelFuture channelFuture = b.connect(host, port);
-            delegate = new DelegateCallback<E>(callback, channelFuture);
-            future = new FutureHelper(channelFuture, callback);
-            channelFuture.addListener(new ChannelFutureListener() {         
-                @Override
-                public void operationComplete(final ChannelFuture f) {
-                    future.lock.lock();
-                    try {
-                        if (f.isCancelled()) {
-                            future.cancelled.set(true);
-                            future.waitingForCompletion.signalAll();
-                            delegate.cancelled();
-                        } else if (!f.isSuccess()) {
-                            future.error.set(f.cause());
-                            future.waitingForCompletion.signalAll();
-                            delegate.failed(f.cause());
-                        } else {
-                            final Channel ch = f.channel();
-                            final ChannelPipeline p = ch.pipeline();
-
-                            if (decoder == null) {
-                                p.addLast(AGGREGATOR, new HttpObjectAggregator(Integer.MAX_VALUE));
-                            }
-                            // only add read timeout after successful channel connection
-                            if (p.get(READ_TIMEOUT_HANDLER) != null) {
-                                p.remove(READ_TIMEOUT_HANDLER);
-                            }
-                            p.addLast(READ_TIMEOUT_HANDLER, new ReadTimeoutHandler(readTimeout, TimeUnit.MILLISECONDS));
-
-                            if (p.get(RIBBON_HANDLER) != null) {
-                                p.remove(RIBBON_HANDLER);
-                            }
-
-                            p.addLast(RIBBON_HANDLER, new RibbonHttpChannelInboundHandler<E>(delegate, decoder, uri, future));
-                            if (decoder != null) {
-                                p.addLast("EntityDecoder", new ByteToMessageDecoder() {
-                                    @Override
-                                    protected void decode(
-                                            ChannelHandlerContext ctx,
-                                            ByteBuf in, List<Object> out)
-                                                    throws Exception {
-                                        Object obj = decoder.decode(in);
-                                        if (obj != null) {
-                                            out.add(obj);
-                                        }
-                                        // in.release();                                    
-                                    }
-                                });
-                                p.addLast("EntityHandler", new SimpleChannelInboundHandler<E>() {
-                                    @Override
-                                    protected void channelRead0(
-                                            ChannelHandlerContext ctx, E msg)
-                                                    throws Exception {
-                                        if (msg != null) {
-                                            delegate.contentReceived(msg);
-                                        }
-                                    }
-
-                                    @Override
-                                    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-                                        delegate.failed(cause);
-                                    }
-
-                                });
-                            }
-                            ch.writeAndFlush(nettyHttpRequest).addListener(new ChannelFutureListener() {
-                                @Override
-                                public void operationComplete(ChannelFuture f) throws Exception {
-                                    if (f.isCancelled()) {
-                                        future.cancelled.set(true);
-                                        future.waitingForCompletion.signalAll();
-                                        delegate.cancelled();
-                                    } else if (!f.isSuccess()) {
-                                        future.error.set(f.cause());
-                                        future.waitingForCompletion.signalAll();
-                                        delegate.failed(f.cause());
-                                    }
-                                }
-                            });
-                        };
-                    } catch (Throwable e) {
-                        // this will be called if task submission is rejected
-                        future.error.set(e);
-                        future.waitingForCompletion.signalAll();
-                        delegate.failed(e);
-                    } finally {
-                        future.lock.unlock();
-                    }
-                }
-            });
-            return future;
-        } catch (Exception e) {
-            throw new ClientException(e);
+            nettyHttpRequest = getHttpRequest(request);
+        } catch (Throwable e) {
+            promise.setFailure(e);
+            return promise;
         }
-    }
+        b.option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeout);
+        ChannelFuture channelFuture = b.connect(host, port);
+        promise.setChannelFuture(channelFuture);
+        channelFuture.addListener(new ChannelFutureListener() {         
+            @Override
+            public void operationComplete(final ChannelFuture f) {
+                try {
+                    if (f.isCancelled()) {
+                        promise.setFailure(new CancellationException());
+                    } else if (!f.isSuccess()) {
+                        promise.setFailure(f.cause());
+                    } else {
+                        final Channel ch = f.channel();
+                        // ch.attr(promiseAttrKey).set(promise);
+                        final ChannelPipeline p = ch.pipeline();
+                        // only add read timeout after successful channel connection
+                        if (p.get(RIBBON_HANDLER) != null) {
+                            p.remove(RIBBON_HANDLER);
+                        }
 
-    private void invokeResponseCallback(final ResponseCallback<com.netflix.client.http.HttpResponse, ?> callback, final NettyHttpResponse nettyResponse) {
-        callback.completed(nettyResponse);
-    }
+                        p.addLast(RIBBON_HANDLER, new RibbonHttpChannelInboundHandler<T>(uri, typeDef, promise));
+                        
+                        p.addLast("Decoder", new HttpEntityDecoder<T>(serializationFactory, typeDef));
+                        // p.addLast(handlers)
 
-    private void invokeExceptionCallback(final ResponseCallback<com.netflix.client.http.HttpResponse, ?> callback, final Throwable e) {
-        callback.failed(e);
+                        p.addLast("Final", new SimpleChannelInboundHandler<T>() {
+                            @Override
+                            protected void channelRead0(
+                                    ChannelHandlerContext ctx, T msg)
+                                            throws Exception {
+                                promise.trySuccess(msg);
+                            }
+
+                            @Override
+                            public void exceptionCaught(
+                                    ChannelHandlerContext ctx, Throwable cause)
+                                    throws Exception {
+                                promise.tryFailure(cause);
+                            }
+                        });
+
+                        ChannelFuture future = ch.writeAndFlush(nettyHttpRequest);
+                        promise.setChannelFuture(future);
+                        future.addListener(new ChannelFutureListener() {
+                            @Override
+                            public void operationComplete(ChannelFuture future) throws Exception {
+                                if (f.isCancelled()) {
+                                    promise.cancel(true);
+                                } else if (!f.isSuccess()) {
+                                    promise.tryFailure(f.cause());
+                                }
+                            }
+                        });
+                    };
+                } catch (Throwable e) {
+                    promise.tryFailure(e);
+                } 
+            }
+        });
+        return promise;
+        
     }
 
     private static String getContentType(Map<String, Collection<String>> headers) {
@@ -569,7 +319,7 @@ IClientConfigAware {
         if (entity != null) {
             String contentType = getContentType(request.getHeaders());    
             ContentTypeBasedSerializerKey key = new ContentTypeBasedSerializerKey(contentType, entity.getClass());
-            Serializer serializer = serializationFactory.getSerializer(key).orNull();
+            Serializer serializer = serializationFactory.getSerializer(key);
             if (serializer == null) {
                 throw new ClientException("Unable to find serializer for " + key);
             }
@@ -593,8 +343,9 @@ IClientConfigAware {
                 r.headers().set(name, values);
             }
         }
-        r.headers().set("Connection", "Keep-Alive");
-        r.headers().set("Host", request.getUri().getHost());
+        if (request.getUri().getHost() != null) {
+            r.headers().set(HttpHeaders.Names.HOST, request.getUri().getHost());
+        }
         return r;
     }
 
@@ -632,31 +383,8 @@ IClientConfigAware {
         this.executeCallbackInSeparateThread = executeCallbackInSeparateThread;
     }
 
-    @Override
-    public Future<com.netflix.client.http.HttpResponse> execute(
-            com.netflix.client.http.HttpRequest request,
-            BufferedResponseCallback<com.netflix.client.http.HttpResponse> callback)
-                    throws ClientException {
-        return execute(request, null, callback);
-    }
-
-    @Override
-    public void addSerializationFactory(
-            SerializationFactory<ContentTypeBasedSerializerKey> factory) {
-        // TODO Auto-generated method stub
-
-    }
 
     @Override
     public void close() throws IOException {
-        // TODO Auto-generated method stub
-
     }
-
-    @Override
-    public Future<com.netflix.client.http.HttpResponse> execute(
-            com.netflix.client.http.HttpRequest request) throws ClientException {
-        return execute(request, null, null);
-    }
-
 }
