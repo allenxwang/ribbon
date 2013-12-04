@@ -29,7 +29,12 @@ public class ExecutionPromise<T> extends DefaultPromise<T> implements Listenable
                 if (future.isSuccess()) {
                     callback.completed(future.get());
                 } else if (future.isCancelled()) {
-                    callback.failed(new CancellationException());
+                    if (channelFuture != null) {
+                        if (channelFuture.isCancellable()) {
+                            channelFuture.cancel(true);
+                        } 
+                    }                     
+                    callback.cancelled();                    
                 } else if (!future.isSuccess()) {
                     callback.failed(future.cause());
                 }
@@ -46,6 +51,7 @@ public class ExecutionPromise<T> extends DefaultPromise<T> implements Listenable
         super(executor);
     }
 
+    // TODO: rename to addCallback
     @Override
     public void addListener(ResponseCallback<T> callback) {
         this.addListener(new RibbonChannelListener(callback));
@@ -55,29 +61,6 @@ public class ExecutionPromise<T> extends DefaultPromise<T> implements Listenable
         this.channelFuture = channelFuture;
     }
     
-    @Override
-    public boolean cancel(boolean mayInterrupt) {
-        if (!this.isCancellable()) {
-            return false;
-        }
-        boolean cancelled = false;
-        if (channelFuture != null) {
-            if (channelFuture.isCancellable()) {
-                cancelled = channelFuture.cancel(mayInterrupt);
-            } else if (channelFuture.isSuccess()) {
-                Channel ch = channelFuture.channel();
-                try {
-                    cancelled = ch.disconnect().sync().isSuccess();
-                } catch (InterruptedException e) {
-                }
-            }
-        } 
-        if (cancelled) {
-            return super.cancel(mayInterrupt);
-        }
-        return cancelled;
-    }
-
     @Override
     protected EventExecutor executor() {
         if (channelFuture != null && channelFuture.isSuccess()) {

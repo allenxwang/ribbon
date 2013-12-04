@@ -641,9 +641,13 @@ public class DefaultClientConfigImpl implements IClientConfig {
 	 * @see com.netflix.niws.client.CliengConfig#getProperty(com.netflix.niws.client.ClientConfigKey)
 	 */
     @Override
-	public Object getProperty(IClientConfigKey key){
+	public String getProperty(IClientConfigKey key){
         String propName = key.key();
-        return getProperty(propName);
+        Object value = getProperty(propName);
+        if (value == null) {
+            return null;
+        }
+        return String.valueOf(value);
     }
 
     /* (non-Javadoc)
@@ -781,5 +785,15 @@ public class DefaultClientConfigImpl implements IClientConfig {
             }
         }
         return defaultValue;
+    }
+
+    @Override
+    public <T> T getTypedProperty(IClientConfigKey<T> key) {
+        return (T) properties.get(key.key());
+    }
+
+    @Override
+    public <T> void setTypedProperty(IClientConfigKey<T> key, T value) {
+        properties.put(key.key(), value);
     }
 }

@@ -56,7 +56,6 @@ import com.netflix.serialization.TypeDef;
 public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware {
 
     private SerializationFactory<ContentTypeBasedSerializerKey> serializationFactory = new JacksonSerializationFactory();
-    private Bootstrap b = new Bootstrap();
 
     public static final String RIBBON_HANDLER = "ribbonHandler"; 
     public static final String READ_TIMEOUT_HANDLER = "readTimeoutHandler";
@@ -66,24 +65,24 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
 
     private int readTimeout;
     private int connectTimeout;
-    private EventLoopGroup eventGroup;
+    private Bootstrap bootStrap;
 
     private static final Logger logger = LoggerFactory.getLogger(AsyncNettyHttpClient.class);
     
     public AsyncNettyHttpClient() {
-        this(DefaultClientConfigImpl.getClientConfigWithDefaultValues(), new NioEventLoopGroup());
+        this(DefaultClientConfigImpl.getClientConfigWithDefaultValues(), new Bootstrap().group(new NioEventLoopGroup()));
     }
 
     public AsyncNettyHttpClient(IClientConfig config) {
-        this(config, new NioEventLoopGroup());
+        this(config, new Bootstrap().group(new NioEventLoopGroup()));
     }
 
-    public AsyncNettyHttpClient(IClientConfig config, EventLoopGroup group) {
+    // TODO: pass bootstrap
+    public AsyncNettyHttpClient(IClientConfig config, Bootstrap bootStrap) {
         Preconditions.checkNotNull(config);
-        Preconditions.checkNotNull(group);
-        eventGroup = group;
-        b.group(group)
-        .channel(NioSocketChannel.class)
+        Preconditions.checkNotNull(bootStrap);
+        this.bootStrap = bootStrap;
+        bootStrap.channel(NioSocketChannel.class)
         .option(ChannelOption.SO_KEEPALIVE, true)
         .handler(new Initializer());
         initWithNiwsConfig(config);
@@ -104,13 +103,16 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
         readTimeout = config.getPropertyAsInteger(CommonClientConfigKey.ReadTimeout, DefaultClientConfigImpl.DEFAULT_READ_TIMEOUT);
     }
 
+    // TODO: make Initializer extensible
     private class Initializer extends ChannelInitializer<SocketChannel> {
         @Override
         protected void initChannel(SocketChannel ch) throws Exception {
             ChannelPipeline p = ch.pipeline();
 
             // p.addLast("log", new LoggingHandler(LogLevel.INFO));
-            p.addLast("codec", new HttpClientCodec());
+            p.addLast("httpcodec", new HttpClientCodec());
+            
+            p.addLast("encoder", new HttpRequestEncoder(serializationFactory));
 
             p.addLast("inflater", new HttpContentDecompressor());
             
@@ -187,17 +189,9 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
                 port = 443;
             }
         }
-        // final AttributeKey<ExecutionPromise<T>> promiseAttrKey = new AttributeKey<ExecutionPromise<T>>(PROCESSING_PROMISE);
-        final HttpRequest nettyHttpRequest;
-        final ExecutionPromise<T> promise = new ExecutionPromise<T>(this.eventGroup.next());
-        try {
-            nettyHttpRequest = getHttpRequest(request);
-        } catch (Throwable e) {
-            promise.setFailure(e);
-            return promise;
-        }
-        b.option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeout);
-        ChannelFuture channelFuture = b.connect(host, port);
+        final ExecutionPromise<T> promise = new ExecutionPromise<T>(bootStrap.group().next());
+        bootStrap.option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeout);
+        ChannelFuture channelFuture = bootStrap.connect(host, port);
         promise.setChannelFuture(channelFuture);
         channelFuture.addListener(new ChannelFutureListener() {         
             @Override
@@ -206,7 +200,7 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
                     if (f.isCancelled()) {
                         promise.cancel(true);
                     } else if (!f.isSuccess()) {
-                        promise.setFailure(f.cause());
+                        promise.tryFailure(f.cause());
                     } else {
                         final Channel ch = f.channel();
                         // ch.attr(promiseAttrKey).set(promise);
@@ -218,7 +212,7 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
 
                         p.addLast(RIBBON_HANDLER, new RibbonHttpChannelInboundHandler<T>(uri, typeDef, promise));
                         
-                        p.addLast("Decoder", new HttpEntityDecoder<T>(serializationFactory, typeDef));
+                        p.addLast("Decoder", new HttpEntityDecoder<T>(serializationFactory, request, typeDef));
                         // p.addLast(handlers)
 
                         p.addLast("Final", new SimpleChannelInboundHandler<T>() {
@@ -237,7 +231,7 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
                             }
                         });
 
-                        ChannelFuture future = ch.writeAndFlush(nettyHttpRequest);
+                        ChannelFuture future = ch.writeAndFlush(request);
                         promise.setChannelFuture(future);
                         future.addListener(new ChannelFutureListener() {
                             @Override
@@ -257,70 +251,6 @@ public class AsyncNettyHttpClient implements AsyncHttpClient, IClientConfigAware
         });
         return promise;
         
-    }
-
-    private static String getContentType(Map<String, Collection<String>> headers) {
-        if (headers == null) {
-            return null;
-        }
-        for (Map.Entry<String, Collection<String>> entry: headers.entrySet()) {
-            String key = entry.getKey();
-            if (key.equalsIgnoreCase("content-type")) {
-                Collection<String> values = entry.getValue();
-                if (values != null && values.size() > 0) {
-                    return values.iterator().next();
-                }
-            }
-        }
-        return null;
-    }
-
-    private HttpRequest getHttpRequest(com.netflix.client.http.HttpRequest request) throws ClientException {
-        HttpRequest r = null;
-        Object entity = request.getEntity();
-        String uri = request.getUri().getRawPath();
-        if (request.getQueryParams() != null) {
-            QueryStringEncoder encoder = new QueryStringEncoder(uri);
-            for (Map.Entry<String, Collection<String>> entry: request.getQueryParams().entrySet()) {
-                String name = entry.getKey();
-                Collection<String> values = entry.getValue();
-                for (String value: values) {
-                    encoder.addParam(name, value);
-                }
-            }
-            uri = encoder.toString();
-        }
-        if (entity != null) {
-            String contentType = getContentType(request.getHeaders());    
-            ContentTypeBasedSerializerKey key = new ContentTypeBasedSerializerKey(contentType, entity.getClass());
-            Serializer serializer = serializationFactory.getSerializer(key);
-            if (serializer == null) {
-                throw new ClientException("Unable to find serializer for " + key);
-            }
-            ByteArrayOutputStream bout = new ByteArrayOutputStream();
-            try {
-                serializer.serialize(bout, entity);
-            } catch (IOException e) {
-                throw new ClientException("Error serializing entity in request", e);
-            }
-            byte[] content = bout.toByteArray();
-            ByteBuf buf = Unpooled.wrappedBuffer(content);
-            r = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.valueOf(request.getVerb().name()), uri, buf);
-            r.headers().set(HttpHeaders.Names.CONTENT_LENGTH, content.length);
-        } else {
-            r = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.valueOf(request.getVerb().name()), uri);
-        }
-        if (request.getHeaders() != null) {
-            for (Map.Entry<String, Collection<String>> entry: request.getHeaders().entrySet()) {
-                String name = entry.getKey();
-                Collection<String> values = entry.getValue();
-                r.headers().set(name, values);
-            }
-        }
-        if (request.getUri().getHost() != null) {
-            r.headers().set(HttpHeaders.Names.HOST, request.getUri().getHost());
-        }
-        return r;
     }
 
     public final SerializationFactory<ContentTypeBasedSerializerKey> getSerializationFactory() {

@@ -38,6 +38,7 @@ import com.netflix.client.http.HttpRequest.Verb;
 import com.netflix.client.http.HttpResponse;
 import com.netflix.client.netty.http.AsyncNettyHttpClient;
 import com.netflix.client.netty.http.NettyHttpLoadBalancerErrorHandler;
+import com.netflix.client.netty.http.RxNettyHttpClient;
 import com.netflix.loadbalancer.AvailabilityFilteringRule;
 import com.netflix.loadbalancer.BaseLoadBalancer;
 import com.netflix.loadbalancer.DummyPing;
@@ -190,6 +191,25 @@ public class NettyClientTest {
     }
     
     @Test
+    public void testObservable() throws Exception {
+        URI uri = new URI(SERVICE_URI + "testAsync/person");
+        HttpRequest request = HttpRequest.newBuilder().uri(uri).build();
+        RxNettyHttpClient observableClient = new RxNettyHttpClient();
+        final List<Person> result = Lists.newArrayList();
+        observableClient.execute(request, TypeDef.fromClass(Person.class)).toBlockingObservable().forEach(new Action1<Person>() {
+            @Override
+            public void call(Person t1) {
+                try {
+                    result.add(t1);
+                    System.err.println("added");
+                } catch (Exception e) { // NOPMD
+                }
+            }
+        });
+        assertEquals(Lists.newArrayList(EmbeddedResources.defaultPerson), result);
+    }
+    
+    @Test
     public void testGet() throws Exception {
         URI uri = new URI(SERVICE_URI + "testAsync/person");
         HttpRequest request = HttpRequest.newBuilder().uri(uri).build();
@@ -319,7 +339,7 @@ public class NettyClientTest {
         ResponseCallbackWithLatchForType<Person> callback = new  ResponseCallbackWithLatchForType<Person>();
         client.execute(request, TypeDef.fromClass(Person.class)).addListener(callback);
         callback.awaitCallback();
-        assertEquals("Service Unavailable", callback.getError().getCause().getMessage());
+        assertEquals("Service Unavailable", callback.getError().getMessage());
     }
     
     /*

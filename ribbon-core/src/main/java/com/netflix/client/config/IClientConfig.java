@@ -42,7 +42,7 @@ public interface IClientConfig {
 
 	public void setProperty(IClientConfigKey key, Object value);
 
-	public Object getProperty(IClientConfigKey key);
+	public String getProperty(IClientConfigKey key);
 
 	public Object getProperty(IClientConfigKey key, Object defaultVal);
 
@@ -58,5 +58,8 @@ public interface IClientConfig {
     public String getPropertyAsString(IClientConfigKey key, String defaultValue);
     
     public boolean getPropertyAsBoolean(IClientConfigKey key, boolean defaultValue);
-
+    
+    public <T> T getTypedProperty(IClientConfigKey<T> key);
+    
+    public <T> void setTypedProperty(IClientConfigKey<T> key, T value);
 }
