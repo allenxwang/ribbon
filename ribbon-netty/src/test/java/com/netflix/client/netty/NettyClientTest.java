@@ -12,6 +12,7 @@ import io.netty.buffer.Unpooled;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
@@ -26,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import rx.Observable;
 import rx.util.functions.Action1;
 
 import com.google.common.collect.Lists;
@@ -209,6 +211,76 @@ public class NettyClientTest {
         assertEquals(Lists.newArrayList(EmbeddedResources.defaultPerson), result);
     }
     
+    @Test
+    public void testMultipleObsers() throws Exception {
+        URI uri = new URI(SERVICE_URI + "testAsync/person");
+        HttpRequest request = HttpRequest.newBuilder().uri(uri).build();
+        RxNettyHttpClient observableClient = new RxNettyHttpClient();
+        Observable<Person> observable = observableClient.execute(request, TypeDef.fromClass(Person.class)).cache();
+        final IdentityHashMap<Person, String> map = new IdentityHashMap<EmbeddedResources.Person, String>();
+        final CountDownLatch latch = new CountDownLatch(3);
+        Action1<Person> onNext = new Action1<Person>() {
+            @Override
+            public void call(Person t1) {
+                System.err.println("add person ");
+                map.put(t1, "");
+                latch.countDown();
+            }
+        };
+
+        for (int i = 0; i < 3; i++) {
+            observable.subscribe(onNext);
+        }
+        latch.await(2000, TimeUnit.MILLISECONDS);
+        assertEquals(1, map.size());
+    }
+
+    @Test
+    public void testFullResponse() throws Exception {
+        URI uri = new URI(SERVICE_URI + "testAsync/person");
+        HttpRequest request = HttpRequest.newBuilder().uri(uri).build();
+        RxNettyHttpClient observableClient = new RxNettyHttpClient();
+        final List<Person> result = Lists.newArrayList();
+        final CountDownLatch latch = new CountDownLatch(1);        
+        observableClient.execute(request, TypeDef.fromClass(HttpResponse.class)).subscribe(new Action1<HttpResponse>() {
+            @Override
+            public void call(HttpResponse t1) {
+                try {
+                    result.add(t1.getEntity(Person.class));
+                    System.err.println("added");
+                    latch.countDown();
+                } catch (Exception e) { 
+                    e.printStackTrace();
+                    latch.countDown();
+                }
+            }
+        });
+        latch.await();
+        assertEquals(Lists.newArrayList(EmbeddedResources.defaultPerson), result);
+
+    }
+    
+    @Test
+    public void testPostWithObservable() throws Exception {
+        URI uri = new URI(SERVICE_URI + "testAsync/person");
+        Person myPerson = new Person("netty", 5);
+        HttpRequest request = HttpRequest.newBuilder().uri(uri).verb(Verb.POST).entity(myPerson).header("Content-type", "application/json").build();
+        RxNettyHttpClient observableClient = new RxNettyHttpClient();
+        final List<Person> result = Lists.newArrayList();
+        observableClient.execute(request, TypeDef.fromClass(Person.class)).toBlockingObservable().forEach(new Action1<Person>() {
+            @Override
+            public void call(Person t1) {
+                try {
+                    result.add(t1);
+                    System.err.println("added");
+                } catch (Exception e) { // NOPMD
+                }
+            }
+        });
+        assertEquals(1, result.size());
+        assertEquals(myPerson, result.get(0));
+    }
+
     @Test
     public void testGet() throws Exception {
         URI uri = new URI(SERVICE_URI + "testAsync/person");

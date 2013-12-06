@@ -62,8 +62,8 @@ project(':ribbon-httpclient') {
 project(':ribbon-netty') {
     dependencies {
         compile project(':ribbon-core')
-        compile 'io.netty:netty-all:4.0.11.Final'
-        compile 'com.netflix.rxnetty:rx-netty:0.1.1'
+        compile 'io.netty:netty-all:4.0.13.Final'
+        compile 'com.netflix.rxnetty:rx-netty:0.1.2-SNAPSHOT'
         testCompile project(':ribbon-test')        
     }
 }

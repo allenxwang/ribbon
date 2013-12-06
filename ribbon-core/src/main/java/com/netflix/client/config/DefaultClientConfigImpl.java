@@ -17,6 +17,10 @@
 */
 package com.netflix.client.config;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
@@ -789,7 +793,26 @@ public class DefaultClientConfigImpl implements IClientConfig {
 
     @Override
     public <T> T getTypedProperty(IClientConfigKey<T> key) {
-        return (T) properties.get(key.key());
+        Object obj = properties.get(key.key());
+        try {
+            if (obj == null) {
+                return null;
+            }
+            return (T) obj;
+        } catch (Throwable e) {
+        }
+        String stringValue = String.valueOf(obj); 
+        try {
+            Boolean b = Boolean.valueOf(stringValue);
+            return (T) b;
+        } catch (Throwable e) {
+        }        
+        try {
+            Integer i = Integer.valueOf(stringValue);
+            return (T) i;
+        } catch (Throwable e) {
+        }
+        throw new IllegalArgumentException("The value " + obj + " does not match the expected type of the key with name " + key.key());
     }
 
     @Override
