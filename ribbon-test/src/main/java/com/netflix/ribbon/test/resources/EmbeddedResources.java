@@ -105,6 +105,7 @@ public class EmbeddedResources {
     @GET
     @Path("/person")
     public Response getPerson() throws IOException {
+        System.err.println("Resource: person");
         String content = mapper.writeValueAsString(defaultPerson);
         return Response.ok(content).build();
     }

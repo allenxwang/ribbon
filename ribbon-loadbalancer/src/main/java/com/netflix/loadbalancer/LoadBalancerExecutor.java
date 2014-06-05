@@ -122,10 +122,10 @@ public class LoadBalancerExecutor extends LoadBalancerContext {
     private class RetryNextServerFunc<T> implements Func1<Throwable, Observable<T>> {
 
         private final AtomicInteger counter = new AtomicInteger();
-        private final OnSubscribeFunc<T> onSubscribe;
+        private final OnSubscribe<T> onSubscribe;
         private final RetryHandler callErrorHandler;
         
-        RetryNextServerFunc(OnSubscribeFunc<T> onSubscribe, RetryHandler errorHandler) {
+        RetryNextServerFunc(OnSubscribe<T> onSubscribe, RetryHandler errorHandler) {
             this.onSubscribe = onSubscribe;
             this.callErrorHandler = errorHandler == null ? getErrorHandler() : errorHandler;
         }
@@ -150,7 +150,8 @@ public class LoadBalancerExecutor extends LoadBalancerContext {
                 finalThrowable = t1;
             }
             if (shouldRetry) {
-                return createObservableFromOnSubscribeFunc(onSubscribe).onErrorResumeNext(this);
+                // return createObservableFromOnSubscribeFunc(onSubscribe).onErrorResumeNext(this);
+                return Observable.create(onSubscribe).onErrorResumeNext(this);
             } else {
                 return Observable.error(finalThrowable);
                 
@@ -257,21 +258,39 @@ public class LoadBalancerExecutor extends LoadBalancerContext {
      */
     protected <T> Observable<T> executeWithLoadBalancer(final ClientObservableProvider<T> clientObservableProvider, @Nullable final URI loadBalancerURI, 
             @Nullable final RetryHandler retryHandler, @Nullable final Object loadBalancerKey) {
-        OnSubscribeFunc<T> onSubscribe = new OnSubscribeFunc<T>() {
+        OnSubscribe<T> onSubscribe = new OnSubscribe<T>() {
+            @Override
+            public void call(final Subscriber<? super T> t1) {
+                Server server = null;
+                try {
+                    server = getServerFromLoadBalancer(loadBalancerURI, loadBalancerKey);
+                    System.err.println("Subscribed to run on server: " + server);
+                    retrySameServer(server, clientObservableProvider, retryHandler).subscribe(t1);
+                } catch (Exception e) {
+                    logger.error("Unexpected error", e);
+                    t1.onError(e);
+                }
+            }
+        };
+        
+        OnSubscribeFunc<T> onSubscribeFunc = new OnSubscribeFunc<T>() {
             @Override
             public Subscription onSubscribe(final Observer<? super T> t1) {
                 Server server = null;
                 try {
                     server = getServerFromLoadBalancer(loadBalancerURI, loadBalancerKey);
+                    System.err.println("Subscribed to run on server: " + server);
                 } catch (Exception e) {
                     logger.error("Unexpected error", e);
                     t1.onError(e);
                     return Subscriptions.empty();
                 }
                 return retrySameServer(server, clientObservableProvider, retryHandler).subscribe(t1);
+
             }
         };
-        Observable<T> observable = createObservableFromOnSubscribeFunc(onSubscribe);
+        // Observable<T> observable = createObservableFromOnSubscribeFunc(onSubscribeFunc);
+        Observable<T> observable = Observable.create(onSubscribe);
         RetryNextServerFunc<T> retryNextServerFunc = new RetryNextServerFunc<T>(onSubscribe, retryHandler);
         return observable.onErrorResumeNext(retryNextServerFunc);
     }
@@ -298,6 +317,7 @@ public class LoadBalancerExecutor extends LoadBalancerContext {
                     private volatile T entity; 
                     @Override
                     public void onCompleted() {
+                        System.err.println("Server : " + server + " onCompleted");
                         recordStats(entity, null);
                         t1.onCompleted();
                     }
@@ -311,6 +331,7 @@ public class LoadBalancerExecutor extends LoadBalancerContext {
 
                     @Override
                     public void onNext(T obj) {
+                        System.err.println("Server : " + server + " onNext: " + obj);
                         entity = obj;
                         t1.onNext(obj);
                     }
@@ -326,6 +347,9 @@ public class LoadBalancerExecutor extends LoadBalancerContext {
         };
         
         Observable<T> observable = Observable.create(onSubscribe);
+        if (errorHandler.getMaxRetriesOnSameServer() == 0) {
+            return observable;
+        }
         RetrySameServerFunc<T> retrySameServerFunc = new RetrySameServerFunc<T>(server, onSubscribe, errorHandler);
         return observable.onErrorResumeNext(retrySameServerFunc);
     }
