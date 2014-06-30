@@ -11,6 +11,7 @@ public abstract class ResourceGroup<T extends RequestTemplate<?, ?>> {
         this(name, null);
     }
 
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public ResourceGroup(String name, ClientOptions options) {
         this.name = name;
         clientConfig = loadDefaultConfig(name);

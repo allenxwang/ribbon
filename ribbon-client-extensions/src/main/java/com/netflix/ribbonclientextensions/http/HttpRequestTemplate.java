@@ -7,11 +7,6 @@ import io.netty.handler.codec.http.HttpMethod;
 import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.client.HttpClientResponse;
 
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-
 import com.netflix.client.netty.LoadBalancingRxClient;
 import com.netflix.hystrix.HystrixCommandGroupKey;
 import com.netflix.hystrix.HystrixCommandKey;
@@ -29,33 +24,12 @@ public class HttpRequestTemplate<T> extends RequestTemplate<T, HttpClientRespons
     private final HttpClient<ByteBuf, ByteBuf> client;
     private final String clientName;
     private final int maxResponseTime;
-    private HystrixObservableCommand.Setter setter;
     private FallbackHandler<T> fallbackHandler;
     private ParsedTemplate parsedUriTemplate;
-    private ResponseValidator<HttpClientResponse<ByteBuf>> validator;
     private HttpMethod method;
-    private final List<CacheProviderWithKeyTemplate<T>> cacheProviders;
-    private ParsedTemplate hystrixCacheKeyTemplate;
-    private Map<String, ParsedTemplate> parsedTemplates;
     private final int concurrentRequestLimit;
     private final HttpHeaders headers;
     
-    static class CacheProviderWithKeyTemplate<T> {
-        private ParsedTemplate keyTemplate;
-        private CacheProvider<T> provider;
-        public CacheProviderWithKeyTemplate(ParsedTemplate keyTemplate,
-                CacheProvider<T> provider) {
-            super();
-            this.keyTemplate = keyTemplate;
-            this.provider = provider;
-        }
-        public final ParsedTemplate getKeyTemplate() {
-            return keyTemplate;
-        }
-        public final CacheProvider<T> getProvider() {
-            return provider;
-        }
-    }
     
     public HttpRequestTemplate(String name, HttpResourceGroup group, Class<? extends T> classType) {
         super(name, group, classType);
@@ -73,8 +47,6 @@ public class HttpRequestTemplate<T> extends RequestTemplate<T, HttpClientRespons
         method = HttpMethod.GET;
         headers = new DefaultHttpHeaders();
         headers.add(group.getHeaders());
-        cacheProviders = new LinkedList<CacheProviderWithKeyTemplate<T>>();
-        parsedTemplates = new HashMap<String, ParsedTemplate>();
     }
     
     @Override
@@ -104,14 +76,6 @@ public class HttpRequestTemplate<T> extends RequestTemplate<T, HttpClientRespons
         return this;
     }
     
-    private ParsedTemplate createParsedTemplate(String template) {
-        ParsedTemplate parsedTemplate = parsedTemplates.get(template);
-        if (parsedTemplate == null) {
-            parsedTemplate = ParsedTemplate.create(template);
-            parsedTemplates.put(template, parsedTemplate);
-        } 
-        return parsedTemplate;
-    }
     
     public HttpRequestTemplate<T> withUriTemplate(String uri) {
         this.parsedUriTemplate = createParsedTemplate(uri);
@@ -133,18 +97,9 @@ public class HttpRequestTemplate<T> extends RequestTemplate<T, HttpClientRespons
     @Override
     public HttpRequestTemplate<T> addCacheProvider(String keyTemplate, 
             CacheProvider<T> cacheProvider) {
-        ParsedTemplate template = createParsedTemplate(keyTemplate);
-        cacheProviders.add(new CacheProviderWithKeyTemplate<T>(template, cacheProvider));
-        return this;
+        return (HttpRequestTemplate<T>) super.addCacheProvider(keyTemplate, cacheProvider);
     }
         
-    ParsedTemplate hystrixCacheKeyTemplate() {
-        return hystrixCacheKeyTemplate;
-    }
-    
-    List<CacheProviderWithKeyTemplate<T>> cacheProviders() {
-        return cacheProviders;
-    }
     
     ResponseValidator<HttpClientResponse<ByteBuf>> responseValidator() {
         return validator;
@@ -165,8 +120,7 @@ public class HttpRequestTemplate<T> extends RequestTemplate<T, HttpClientRespons
     @Override
     public HttpRequestTemplate<T> withResponseValidator(
             ResponseValidator<HttpClientResponse<ByteBuf>> validator) {
-        this.validator = validator;
-        return this;
+        return (HttpRequestTemplate<T>) super.withResponseValidator(validator);
     }
 
     @Override
@@ -187,14 +141,9 @@ public class HttpRequestTemplate<T> extends RequestTemplate<T, HttpClientRespons
     @Override
     public HttpRequestTemplate<T> withHystrixProperties(
             Setter propertiesSetter) {
-        this.setter = propertiesSetter;
-        return this;
+        return (HttpRequestTemplate<T>) super.withHystrixProperties(propertiesSetter); 
     }
-    
-    Setter hystrixProperties() {
-        return this.setter;
-    }
-    
+        
     HttpClient<ByteBuf, ByteBuf> getClient() {
         return this.client;
     }

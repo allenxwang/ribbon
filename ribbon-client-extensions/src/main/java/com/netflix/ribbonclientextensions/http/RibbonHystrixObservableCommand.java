@@ -5,25 +5,19 @@ import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.client.HttpClientRequest;
 import io.reactivex.netty.protocol.http.client.HttpClientResponse;
 
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 import rx.Observable;
 import rx.functions.Func1;
 
-import com.netflix.hystrix.HystrixCommandGroupKey;
 import com.netflix.hystrix.HystrixObservableCommand;
 import com.netflix.hystrix.exception.HystrixBadRequestException;
-import com.netflix.ribbonclientextensions.CacheProvider;
 import com.netflix.ribbonclientextensions.ResponseValidator;
 import com.netflix.ribbonclientextensions.ServerError;
 import com.netflix.ribbonclientextensions.UnsuccessfulResponseException;
 import com.netflix.ribbonclientextensions.http.HttpRequest.CacheProviderWithKey;
-import com.netflix.ribbonclientextensions.http.HttpRequestTemplate.CacheProviderWithKeyTemplate;
 import com.netflix.ribbonclientextensions.hystrix.FallbackHandler;
-import com.netflix.ribbonclientextensions.template.TemplateParser;
-import com.netflix.ribbonclientextensions.template.TemplateParsingException;
 
 class RibbonHystrixObservableCommand<T> extends HystrixObservableCommand<T> {
 

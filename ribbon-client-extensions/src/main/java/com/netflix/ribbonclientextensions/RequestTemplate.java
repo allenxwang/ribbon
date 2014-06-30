@@ -1,7 +1,14 @@
 package com.netflix.ribbonclientextensions;
 
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+
 import com.netflix.hystrix.HystrixObservableCommand;
+import com.netflix.hystrix.HystrixObservableCommand.Setter;
 import com.netflix.ribbonclientextensions.hystrix.FallbackHandler;
+import com.netflix.ribbonclientextensions.template.ParsedTemplate;
 
 /**
  * @author awang
@@ -15,16 +22,55 @@ public abstract class RequestTemplate<T, R> {
     private final ResourceGroup<?> group;
     private final Class<? extends T> classType;
     private FallbackHandler<T> fallbackHandler;
+    protected final List<CacheProviderWithKeyTemplate<T>> cacheProviders;
+    protected ParsedTemplate hystrixCacheKeyTemplate;
+    protected Map<String, ParsedTemplate> parsedTemplates;
+    protected HystrixObservableCommand.Setter setter;
+    protected ResponseValidator<R> validator;
 
-    public RequestTemplate(String name,
+    public static abstract class RequestBuilder<T> {
+        public abstract RequestBuilder<T> withRequestProperty(String key, Object value);
+        
+        public abstract RibbonRequest<T> build();
+    }
+
+    public static class CacheProviderWithKeyTemplate<T> {
+        private ParsedTemplate keyTemplate;
+        private CacheProvider<T> provider;
+        public CacheProviderWithKeyTemplate(ParsedTemplate keyTemplate,
+                CacheProvider<T> provider) {
+            super();
+            this.keyTemplate = keyTemplate;
+            this.provider = provider;
+        }
+        public final ParsedTemplate getKeyTemplate() {
+            return keyTemplate;
+        }
+        public final CacheProvider<T> getProvider() {
+            return provider;
+        }
+    }
+
+    protected RequestTemplate(String name,
             ResourceGroup<?> group,
             Class<? extends T> classType) {
         super();
         this.name = name;
         this.group = group;
         this.classType = classType;
+        cacheProviders = new LinkedList<CacheProviderWithKeyTemplate<T>>();
+        parsedTemplates = new HashMap<String, ParsedTemplate>();
     }
     
+    protected ParsedTemplate createParsedTemplate(String template) {
+        ParsedTemplate parsedTemplate = parsedTemplates.get(template);
+        if (parsedTemplate == null) {
+            parsedTemplate = ParsedTemplate.create(template);
+            parsedTemplates.put(template, parsedTemplate);
+        } 
+        return parsedTemplate;
+    }
+
     public final String name() {
         return name;
     }
@@ -51,7 +97,10 @@ public abstract class RequestTemplate<T, R> {
         return fallbackHandler;
     }
 
-    public abstract RequestTemplate<T, R> withResponseValidator(ResponseValidator<R> validator);
+    public RequestTemplate<T, R> withResponseValidator(ResponseValidator<R> validator) {
+        this.validator = validator;
+        return this;
+    }
         
     /**
      * Calling this method will enable both Hystrix request cache and supplied external cache providers  
@@ -61,15 +110,31 @@ public abstract class RequestTemplate<T, R> {
      * @param cacheKeyTemplate
      * @return
      */
-    public abstract RequestTemplate<T, R> withRequestCacheKey(String cacheKeyTemplate);
+    public RequestTemplate<T, R> withRequestCacheKey(String cacheKeyTemplate) {
+        this.hystrixCacheKeyTemplate = createParsedTemplate(cacheKeyTemplate);
+        return this;
+    }
 
-    public abstract RequestTemplate<T, R> addCacheProvider(String cacheKeyTemplate, CacheProvider<T> cacheProvider);
+    public RequestTemplate<T, R> addCacheProvider(String cacheKeyTemplate, CacheProvider<T> cacheProvider) {
+        ParsedTemplate template = createParsedTemplate(cacheKeyTemplate);
+        cacheProviders.add(new CacheProviderWithKeyTemplate<T>(template, cacheProvider));
+        return this;
+    }
     
-    public abstract RequestTemplate<T, R> withHystrixProperties(HystrixObservableCommand.Setter setter);
-    
-    public static abstract class RequestBuilder<T> {
-        public abstract RequestBuilder<T> withRequestProperty(String key, Object value);
+    public RequestTemplate<T, R> withHystrixProperties(HystrixObservableCommand.Setter setter) {
+        this.setter = setter;
+        return this;
+    }
         
-        public abstract RibbonRequest<T> build();
+    public ParsedTemplate hystrixCacheKeyTemplate() {
+        return hystrixCacheKeyTemplate;
+    }
+    
+    public List<CacheProviderWithKeyTemplate<T>> cacheProviders() {
+        return cacheProviders;
+    }
+    
+    public Setter hystrixProperties() {
+        return this.setter;
     }
 }
